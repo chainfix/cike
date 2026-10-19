@@ -108,8 +108,11 @@ function downloadFile(url, dest, onProgress) {
 function unzip(zipPath, destDir) {
   return new Promise((resolve, reject) => {
     fs.mkdirSync(destDir, { recursive: true });
-    const unzipBin = process.platform === 'darwin' ? '/usr/bin/unzip' : 'unzip';
-    execFile(unzipBin, ['-q', '-o', zipPath, '-d', destDir], { timeout: 600000 }, (err) => {
+    // Windows has no unzip; its bundled bsdtar (System32\tar.exe) extracts zips.
+    const [bin, args] = process.platform === 'win32'
+      ? [path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'tar.exe'), ['-xf', zipPath, '-C', destDir]]
+      : [process.platform === 'darwin' ? '/usr/bin/unzip' : 'unzip', ['-q', '-o', zipPath, '-d', destDir]];
+    execFile(bin, args, { timeout: 600000 }, (err) => {
       if (err) return reject(new Error('unzip failed: ' + err.message));
       resolve();
     });

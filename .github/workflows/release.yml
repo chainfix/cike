@@ -1,0 +1,171 @@
+name: Build and Release
+
+"on":
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Release version (e.g. 0.5.13)'
+        required: true
+        default: '0.5.13'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  build-mac:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+      - name: Set release version
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          if [[ -n "$INPUT_VERSION" ]]; then
+            [[ "$INPUT_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || exit 1
+            npm version "$INPUT_VERSION" --no-git-tag-version --allow-same-version
+          fi
+          echo "RELEASE_VERSION=$(node -p "require('./package.json').version")" >> "$GITHUB_ENV"
+      - run: npm ci
+      - name: Package macOS app
+        run: |
+          test -s electron/assets/icon.icns
+          npx electron-packager . CIKE \
+            --platform=darwin --arch=arm64 \
+            --icon=electron/assets/icon.icns \
+            --out=dist --overwrite --prune \
+            '--ignore=^/(test|.browsers|dist)'
+      - name: Verify packaged icon
+        run: |
+          ICON_NAME=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIconFile' dist/CIKE-darwin-arm64/CIKE.app/Contents/Info.plist)
+          cmp electron/assets/icon.icns "dist/CIKE-darwin-arm64/CIKE.app/Contents/Resources/$ICON_NAME"
+      - name: Ad-hoc sign and verify app
+        run: |
+          codesign --force --deep --sign - dist/CIKE-darwin-arm64/CIKE.app
+          codesign --verify --deep --strict --verbose=2 dist/CIKE-darwin-arm64/CIKE.app
+      - name: Create DMG
+        run: |
+          brew install create-dmg
+          mkdir -p dmg-staging out
+          cp -R dist/CIKE-darwin-arm64/CIKE.app dmg-staging/
+          ln -s /Applications dmg-staging/Applications
+          DMG="out/CIKE-${RELEASE_VERSION}-mac-arm64.dmg"
+          create-dmg --volname "CIKE" "$DMG" dmg-staging/
+          hdiutil verify "$DMG"
+          hdiutil attach -readonly -nobrowse -mountpoint "$RUNNER_TEMP/cike-verify" "$DMG"
+          codesign --verify --deep --strict --verbose=2 "$RUNNER_TEMP/cike-verify/CIKE.app"
+          hdiutil detach "$RUNNER_TEMP/cike-verify"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cike-mac-arm64
+          path: out/*.dmg
+          if-no-files-found: error
+
+  build-windows:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+      - name: Set release version
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          if ($env:INPUT_VERSION) {
+            if ($env:INPUT_VERSION -notmatch '^\d+\.\d+\.\d+$') { exit 1 }
+            npm version $env:INPUT_VERSION --no-git-tag-version --allow-same-version
+            if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          }
+          $version = (Get-Content package.json -Raw | ConvertFrom-Json).version
+          "RELEASE_VERSION=$version" >> $env:GITHUB_ENV
+      - run: npm ci
+      - name: Package Windows app
+        run: |
+          if (-not (Test-Path electron/assets/icon.ico)) { throw 'icon.ico missing' }
+          npx electron-packager . CIKE `
+            --platform=win32 --arch=x64 `
+            --icon=electron/assets/icon.ico `
+            --app-version=$env:RELEASE_VERSION `
+            --win32metadata.CompanyName=CIKE `
+            --win32metadata.ProductName=CIKE `
+            --win32metadata.FileDescription=CIKE `
+            --out=dist --overwrite --prune `
+            '--ignore=^/(test|.browsers|dist)'
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+      - name: Verify packaged exe
+        run: |
+          $exe = Get-Item dist/CIKE-win32-x64/CIKE.exe
+          $info = $exe.VersionInfo
+          "ProductName=$($info.ProductName) ProductVersion=$($info.ProductVersion)"
+          if ($info.ProductName -ne 'CIKE') { throw 'unexpected ProductName' }
+          if ($info.ProductVersion -notlike "$env:RELEASE_VERSION*") { throw 'unexpected ProductVersion' }
+      - name: Build installer
+        run: |
+          choco install innosetup -y --no-progress
+          $iscc = Get-ChildItem "${env:ProgramFiles(x86)}\Inno Setup*\ISCC.exe", "$env:ProgramFiles\Inno Setup*\ISCC.exe" -ErrorAction SilentlyContinue |
+            Select-Object -First 1
+          if (-not $iscc) { throw 'ISCC.exe not found' }
+          & $iscc.FullName "/DAppVersion=$env:RELEASE_VERSION" "/DSourceDir=$PWD\dist\CIKE-win32-x64" "/O$PWD\out" electron\installer.iss
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+      - name: Create portable zip
+        run: |
+          Rename-Item dist/CIKE-win32-x64 CIKE
+          7z a -tzip "out/CIKE-$env:RELEASE_VERSION-win-x64-portable.zip" ./dist/CIKE
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          7z t "out/CIKE-$env:RELEASE_VERSION-win-x64-portable.zip"
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cike-win-x64
+          path: |
+            out/*.exe
+            out/*.zip
+          if-no-files-found: error
+
+  release:
+    if: github.event_name == 'workflow_dispatch'
+    needs: [build-mac, build-windows]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: release
+          merge-multiple: true
+      - name: Generate checksums
+        working-directory: release
+        run: |
+          sha256sum * > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ inputs.version }}
+          name: CIKE v${{ inputs.version }}
+          body: |
+            **macOS**（苹果 M 系列芯片、macOS 13 及以上）：下载 `.dmg`。
+            免费临时签名版本，未经过苹果开发者签名和公证。安装后首次打开如被阻止，请前往「系统设置 → 隐私与安全性」选择「仍要打开」。
+
+            **Windows**（Windows 10/11 x64）：下载 `-setup.exe` 安装，或下载 `-portable.zip` 解压后运行 `CIKE.exe`。
+            未经过代码签名，如出现 SmartScreen 提示，请点击「更多信息 → 仍要运行」。
+
+            完整安装说明及无法放行时的处理方法见仓库 README，可使用 `SHA256SUMS.txt` 核对下载文件。
+          files: |
+            release/*
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

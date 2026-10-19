@@ -7,7 +7,7 @@
 <p align="center">本地多环境浏览器 · 独立会话 · 代理管理 · 自动化 API</p>
 
 <p align="center">
-  <a href="https://github.com/chainfix/cike/releases/latest">下载 macOS 版</a> ·
+  <a href="https://github.com/chainfix/cike/releases/latest">下载 macOS / Windows 版</a> ·
   <a href="#软件预览">软件预览</a> ·
   <a href="#安装与首次打开">安装说明</a> ·
   <a href="https://github.com/chainfix/cike/issues">反馈问题</a>
@@ -56,19 +56,23 @@ CIKE 是基于 Electron、Chromium 和 Playwright 的本地多环境浏览器。
 
 ## 下载
 
-前往 **[最新版本发布页](https://github.com/chainfix/cike/releases/latest)** 下载 DMG 安装包。
+前往 **[最新版本发布页](https://github.com/chainfix/cike/releases/latest)** 下载对应系统的安装包。
 
-| 项目 | 当前支持情况 |
-| --- | --- |
-| 系统 | macOS 13 及以上 |
-| 芯片 | Apple Silicon，苹果 M 系列 |
-| 安装包 | `CIKE-版本号-mac-arm64.dmg` |
-| Intel Mac | 当前未提供对应安装包 |
-| 签名 | 免费临时签名（ad-hoc），未经过苹果公证 |
+| 项目 | macOS | Windows |
+| --- | --- | --- |
+| 系统 | macOS 13 及以上 | Windows 10 / 11 |
+| 架构 | Apple Silicon，苹果 M 系列 | x64 |
+| 安装包 | `CIKE-版本号-mac-arm64.dmg` | `CIKE-版本号-win-x64-setup.exe` |
+| 免安装版 | — | `CIKE-版本号-win-x64-portable.zip` |
+| 签名 | 免费临时签名（ad-hoc），未经过苹果公证 | 未进行代码签名 |
 
-发布流程会检查应用图标、应用签名和 DMG 完整性，并提供 `SHA256SUMS.txt` 供核对下载文件。
+Intel Mac 当前未提供对应安装包。
+
+安装包由 GitHub Actions 自动构建：每次推送到 `main` 或提交 Pull Request 都会编译 macOS 和 Windows 版本，可在对应运行记录的 Artifacts 中下载测试；手动运行 **Build and Release** 工作流并填写版本号后会发布正式版本。发布流程会检查应用图标、应用签名、DMG 完整性和 Windows 程序版本信息，并提供 `SHA256SUMS.txt` 供核对下载文件。
 
 ## 安装与首次打开
+
+### macOS
 
 1. 下载并打开 DMG，将 **CIKE** 拖入「应用程序」。
 2. 推出磁盘镜像，从「应用程序」启动 CIKE。
@@ -89,6 +93,13 @@ xattr -dr com.apple.quarantine /Applications/CIKE.app
 
 </details>
 
+### Windows
+
+- **安装版**：运行 `CIKE-版本号-win-x64-setup.exe`，默认安装到当前用户目录，无需管理员权限，可在开始菜单中启动 CIKE。卸载可在「设置 → 应用」中完成。
+- **免安装版**：解压 `CIKE-版本号-win-x64-portable.zip`，运行其中的 `CIKE.exe`。
+
+安装包未进行代码签名，首次运行时如出现「Windows 已保护你的电脑」（SmartScreen）提示，确认文件来自本仓库发布页后，点击 **更多信息 → 仍要运行**。
+
 ## 快速开始
 
 1. **准备内核**：进入「设置」，下载 Chromium；已安装时可以跳过。
@@ -107,7 +118,7 @@ socks5://用户名:密码@host:port
 
 ## 数据保存
 
-默认数据目录为 `~/.local-fingerprint-browser/`，可从设置页打开。通过环境变量 `LFB_DATA` 可以指定其他目录。
+默认数据目录为 `~/.local-fingerprint-browser/`（Windows 为 `%USERPROFILE%\.local-fingerprint-browser\`），可从设置页打开。通过环境变量 `LFB_DATA` 可以指定其他目录。
 
 这里保存环境配置、代理配置、浏览器会话数据和本地 API 凭据。备份时建议先关闭所有浏览器环境并退出应用，再复制整个数据目录；删除该目录会丢失其中保存的数据。
 
