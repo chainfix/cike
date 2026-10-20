@@ -7,3 +7,4 @@ data/
 *.zip
 electron/dist/
 Thumbs.db
+dist-installer/

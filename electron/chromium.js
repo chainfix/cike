@@ -8,7 +8,8 @@
  * and records the executable path in:
  *   <dataDir>/browsers/chromium-executable.txt
  *
- * Uses only Node https + the OS unzip tool (macOS ships /usr/bin/unzip).
+ * Uses only Node https + the OS zip tool (macOS /usr/bin/unzip, Windows
+ * System32 tar.exe or PowerShell Expand-Archive, Linux unzip).
  * Fully self-contained: does not depend on Playwright's internal layout.
  */
 const fs = require('fs');
@@ -105,15 +106,44 @@ function downloadFile(url, dest, onProgress) {
   });
 }
 
-function unzip(zipPath, destDir) {
+function run(cmd, args) {
   return new Promise((resolve, reject) => {
-    fs.mkdirSync(destDir, { recursive: true });
-    const unzipBin = process.platform === 'darwin' ? '/usr/bin/unzip' : 'unzip';
-    execFile(unzipBin, ['-q', '-o', zipPath, '-d', destDir], { timeout: 600000 }, (err) => {
-      if (err) return reject(new Error('unzip failed: ' + err.message));
+    execFile(cmd, args, { timeout: 600000, windowsHide: true }, (err, stdout, stderr) => {
+      if (err) return reject(new Error(`${cmd}: ${String(stderr || err.message).trim().split('\n')[0]}`));
       resolve();
     });
   });
+}
+
+/** Command lines that can unpack a zip on this platform, in preference order. */
+function extractCommands(zipPath, destDir) {
+  if (process.platform === 'win32') {
+    const psQuote = (p) => `'${p.replace(/'/g, "''")}'`;
+    return [
+      // Windows 10 1803+ ships bsdtar (libarchive), which reads zip archives.
+      ['tar.exe', ['-xf', zipPath, '-C', destDir]],
+      ['tar', ['-xf', zipPath, '-C', destDir]],
+      ['unzip', ['-q', '-o', zipPath, '-d', destDir]],
+      ['powershell.exe', ['-NoProfile', '-NonInteractive', '-Command',
+        `Expand-Archive -LiteralPath ${psQuote(zipPath)} -DestinationPath ${psQuote(destDir)} -Force`]],
+    ];
+  }
+  const unzipBin = process.platform === 'darwin' ? '/usr/bin/unzip' : 'unzip';
+  return [[unzipBin, ['-q', '-o', zipPath, '-d', destDir]]];
+}
+
+async function unzip(zipPath, destDir) {
+  fs.mkdirSync(destDir, { recursive: true });
+  const errors = [];
+  for (const [cmd, args] of extractCommands(zipPath, destDir)) {
+    try {
+      await run(cmd, args);
+      return;
+    } catch (err) {
+      errors.push(err.message);
+    }
+  }
+  throw new Error('unzip failed: ' + errors.join(' | '));
 }
 
 /** Locate the browser executable inside the extracted tree. */

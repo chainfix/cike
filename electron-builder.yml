@@ -1,0 +1,52 @@
+appId: com.chainfix.cike
+productName: CIKE
+copyright: Copyright © 2026 chainfix
+
+# 源码打成 app.asar（单个归档，启动略快、目录不散落）
+asar: true
+compression: normal
+npmRebuild: false
+
+directories:
+  output: dist-installer
+  buildResources: electron/assets
+
+# 只排除开发用目录，node_modules 生产依赖由 electron-builder 自动裁剪
+files:
+  - '!test/**'
+  - '!docs/**'
+  - '!.github/**'
+  - '!*.md'
+  - '!dist*/**'
+  - '!**/*.map'
+  - '!electron/assets/*.py'
+  - '!electron/assets/*.icns'
+  - '!**/.DS_Store'
+  - '!**/Thumbs.db'
+
+win:
+  target:
+    - target: nsis
+      arch:
+        - x64
+  icon: electron/assets/icon.ico
+  requestedExecutionLevel: asInvoker
+  artifactName: CIKE-Setup-${version}-${arch}.exe
+
+nsis:
+  oneClick: false # 向导式安装（可选目录），不是静默一键装
+  perMachine: false # 默认装到 %LOCALAPPDATA%\Programs，免 UAC
+  allowElevation: true
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: always
+  createStartMenuShortcut: true
+  shortcutName: CIKE
+  uninstallDisplayName: CIKE
+  installerLanguages:
+    - zh_CN
+  language: '2052'
+  installerIcon: electron/assets/icon.ico
+  uninstallerIcon: electron/assets/icon.ico
+  installerHeaderIcon: electron/assets/icon.ico
+  deleteAppDataOnUninstall: false # 用户环境数据保留，卸载不丢配置
+  artifactName: CIKE-Setup-${version}-${arch}.exe
