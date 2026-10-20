@@ -6,6 +6,18 @@
 
 <p align="center">本地多环境浏览器 · 独立会话 · 代理管理 · 自动化 API</p>
 
+## Windows 版本说明
+
+当前正式发布仅提供 Apple 芯片版 macOS 安装包。维护者目前没有可用于完整测试的 Windows 设备，因此暂不合并和发布未经实际验证的 Windows 构建，避免提供无法确认能否安装、启动和更新的版本。
+
+当前已提交的 Windows 相关 Pull Request 不会被合并，包括 Windows 安装包、打包流程和相关运行时改动；这些改动可以保留在各自的独立分支中。
+
+需要 Windows 版本的用户请基于当前代码另行建立分支进行改造、构建和测试。暂不接受将这类改动合并到主分支，也不将其纳入正式发布。
+
+
+
+发布流程会检查应用图标、应用签名和 DMG 完整性，并提供 `SHA256SUMS.txt` 供核对下载文件。
+
 <p align="center">
   <a href="https://github.com/chainfix/cike/releases/latest">下载 macOS 版</a> ·
   <a href="#软件预览">软件预览</a> ·
@@ -110,18 +122,6 @@ CIKE 是基于 Electron、Chromium 和 Playwright 的本地多环境浏览器。
 | 安装包 | `CIKE-版本号-mac-arm64.dmg` |
 | Intel Mac | 当前未提供对应安装包 |
 | 签名 | 免费临时签名（ad-hoc），未经过苹果公证 |
-
-## Windows 版本说明
-
-当前正式发布仅提供 Apple 芯片版 macOS 安装包。维护者目前没有可用于完整测试的 Windows 设备，因此暂不合并和发布未经实际验证的 Windows 构建，避免提供无法确认能否安装、启动和更新的版本。
-
-当前已提交的 Windows 相关 Pull Request 不会被合并，包括 Windows 安装包、打包流程和相关运行时改动；这些改动可以保留在各自的独立分支中。
-
-需要 Windows 版本的用户请基于当前代码另行建立分支进行改造、构建和测试。暂不接受将这类改动合并到主分支，也不将其纳入正式发布。
-
-
-
-发布流程会检查应用图标、应用签名和 DMG 完整性，并提供 `SHA256SUMS.txt` 供核对下载文件。
 
 ## 安装与首次打开
 
