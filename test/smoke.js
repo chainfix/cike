@@ -90,7 +90,10 @@ async function main() {
     const MAJOR = getChromiumMajor();
     const FULL = getChromiumFullVersion();
     console.log(`Chromium version under test: ${FULL} (major ${MAJOR})`);
-    check('open profile A', ra.open && ra.debug_url.startsWith('http://127.0.0.1:'));
+    // debug_url only exists when LFB_EXPOSE_DEBUGGER=1, so assert its shape
+    // only when the debugger was actually exposed.
+    check('open profile A', ra.open);
+    if (ra.debug_url) check('debug_url points at loopback', ra.debug_url.startsWith('http://127.0.0.1:'));
     check('open profile B', rb.open);
     check('open profile C (canvasNoise)', rc.open);
 
