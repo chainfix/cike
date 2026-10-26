@@ -3,39 +3,43 @@ const fs = require('fs/promises');
 const path = require('path');
 const os = require('os');
 
-async function saveDownload(download, directory) {
+// Set native preferences before launching the profile. Chromium's native
+// download manager preserves filenames, numbers collisions and records the
+// permanent path in chrome://downloads. CDP's `allow` policy overwrites names.
+async function prepareDownloads(profileDirectory, directory = path.join(os.homedir(), 'Downloads')) {
+  directory = path.resolve(directory);
   await fs.mkdir(directory, { recursive: true });
-  const name = path.basename(download.suggestedFilename().replace(/\\/g, '/')).replace(/[\x00-\x1f]/g, '_') || 'download';
-  const safeName = name === '.' || name === '..' ? 'download' : name;
-  const ext = path.extname(safeName), stem = safeName.slice(0, safeName.length - ext.length);
-  // Stage outside the browser's temporary directory. Publish atomically without
-  // overwriting another download, even across concurrent environments.
-  const staging = await fs.mkdtemp(path.join(directory, '.cike-download-'));
-  const temporary = path.join(staging, 'payload');
+  const defaultDirectory = path.join(profileDirectory, 'Default');
+  await fs.mkdir(defaultDirectory, { recursive: true });
+  const filename = path.join(defaultDirectory, 'Preferences');
+  let preferences = {};
+  try { preferences = JSON.parse(await fs.readFile(filename, 'utf8')); }
+  catch (error) { if (error.code !== 'ENOENT') throw error; }
+  preferences.download = {
+    ...preferences.download,
+    default_directory: directory,
+    prompt_for_download: false,
+    directory_upgrade: true,
+  };
+  const temporary = filename + '.cike-downloads';
   try {
-    await download.saveAs(temporary);
-    for (let index = 0; ; index++) {
-      const destination = path.join(directory, index ? `${stem} (${index})${ext}` : safeName);
-      try { await fs.link(temporary, destination); return destination; }
-      catch (error) { if (error.code !== 'EEXIST') throw error; }
-    }
-  } finally { await fs.rm(staging, { recursive: true, force: true }); }
+    await fs.writeFile(temporary, JSON.stringify(preferences), { mode: 0o600 });
+    await fs.rename(temporary, filename);
+  } finally {
+    await fs.rm(temporary, { force: true });
+  }
 }
 
-function attachDownloads(context, directory = path.join(os.homedir(), 'Downloads'), onError = console.error) {
-  const pending = new Set();
-  const attached = new WeakSet();
-  const attach = page => {
-    if (attached.has(page)) return;
-    attached.add(page);
-    page.on('download', download => {
-      const task = saveDownload(download, directory).catch(error => onError('下载保存失败：' + error.message));
-      pending.add(task);
-      task.finally(() => pending.delete(task));
-    });
-  };
-  context.on('page', attach);
-  context.pages().forEach(attach);
-  return { wait: () => Promise.all([...pending]) };
+async function configureDownloads(context) {
+  const page = context.pages()[0] || await context.newPage();
+  const session = await context.newCDPSession(page);
+  try {
+    // Undo Playwright's allowAndName policy, which stores GUID-named artifacts
+    // in a temporary directory. Native defaults apply to all tabs and popups.
+    await session.send('Browser.setDownloadBehavior', { behavior: 'default' });
+  } finally {
+    await session.detach();
+  }
 }
-module.exports = { saveDownload, attachDownloads };
+
+module.exports = { prepareDownloads, configureDownloads };

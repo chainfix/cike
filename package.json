@@ -21,7 +21,7 @@
     "pack:mac-arm64": "electron-packager . CIKE --icon=electron/assets/icon.icns --platform=darwin --arch=arm64 --out=dist --overwrite --prune --ignore=\"^/(test|.browsers|dist|.*.zip$)\""
   },
   "type": "commonjs",
-  "version": "0.5.15",
+  "version": "0.5.16",
   "devDependencies": {
     "electron": "^44.9.0",
     "electron-packager": "^17.1.2"
