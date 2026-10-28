@@ -107,5 +107,7 @@ ipcMain.handle('open-data-dir', async () => {
   return { ok: true };
 });
 
+ipcMain.handle('data-dir', async () => ({ ok: true, dataDir: backend.dataDir }));
+
 ipcMain.handle('update-check', () => checkUpdate());
 ipcMain.handle('update-install', () => installUpdate());

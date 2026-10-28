@@ -232,6 +232,33 @@ npm start
 npm run smoke
 ```
 
+## 打包 Windows 版
+
+Windows x64 支持两种产物（Electron 44）：
+
+```powershell
+npm ci
+
+npm run pack:win-x64   # 免安装目录版 -> dist\CIKE-win32-x64\，双击 CIKE.exe
+npm run dist:win       # asar + NSIS 安装程序 -> dist-installer\CIKE-Setup-0.5.15-x64.exe
+npm run dist:win:dir   # 只出 asar 的免安装目录 -> dist-installer\win-unpacked\
+```
+
+安装程序（`electron-builder` 的 `nsis` target，配置在 `electron-builder.yml`）就是常见的向导式安装包：可选安装目录、建开始菜单快捷方式（桌面快捷方式在向导里勾选）、写入「应用和功能」的卸载项，默认装到 `%LOCALAPPDATA%\Programs\CIKE` 所以不弹 UAC；卸载会保留 `%USERPROFILE%\.local-fingerprint-browser` 里的环境和内核。支持静默安装：`CIKE-Setup-0.5.15-x64.exe /S /D=D:\CIKE`。
+
+`asar: true` 会把 `src/`、`electron/` 与生产依赖打成一个 `resources\app.asar`（约 18 MB），Electron 直接从中加载主进程与渲染进程代码；内核不在 asar 内，仍是设置页下载到用户目录的外部 Chromium。
+
+图标由 `electron/assets/icon.png` 生成：`python electron/assets/make-ico.py`（需要 Pillow），生成的 `electron/assets/icon.ico` 已随仓库提供。
+
+Windows 版与 macOS 版的差异：
+
+- 内核同样在设置页一次性下载（Playwright CDN 的 Chrome for Testing，约 200 MB），解压优先用系统自带的 `tar.exe`，缺失时回退到 `unzip` 或 PowerShell `Expand-Archive`；
+- 下载文件保存在系统「下载」文件夹；
+- 在线更新不做静默替换：点「下载并安装」会打开发布页，下载新版安装包覆盖安装即可；
+- 未做代码签名，首次运行可能出现 SmartScreen 提示，选择「更多信息 → 仍要运行」。
+
+`windows-latest` 上的自动化构建见 `.github/workflows/release-win.yml`（手动触发，产出 `CIKE-Setup-版本号-x64.exe`、`CIKE-版本号-win-x64.zip` 与 `SHA256SUMS.txt`）。
+
 ## 能力范围
 
 CIKE 提供独立会话、环境参数配置和 JavaScript 层面的指纹调整，未对 Chromium 内核进行定制。它不会修改 TLS/JA3 握手特征，也不保证通过所有指纹检测或实现完全匿名。

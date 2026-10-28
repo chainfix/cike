@@ -71,12 +71,18 @@ function showPage(name) {
 // ---------- 新建环境（内嵌页面） ----------
 
 let newPageInited = false;
+let platformDefaulted = false;
 
 function initNewPage() {
   // Populate selects (only once, but refresh proxy list each time)
   const vpSel = document.getElementById('n-vp');
   if (!vpSel.options.length) {
     vpSel.innerHTML = VIEWPORTS.map((v) => `<option>${v}</option>`).join('');
+  }
+  // Default the spoofed OS to the host OS, once (Windows build ships win-first).
+  if (!platformDefaulted) {
+    platformDefaulted = true;
+    document.getElementById('n-platform').value = window.lfb?.platform === 'win32' ? 'win' : 'mac';
   }
   const locSel = document.getElementById('n-locale');
   if (!locSel.options.length) {
@@ -850,6 +856,9 @@ document.querySelectorAll('[data-copy]').forEach((b) => b.onclick = () => {
   navigator.clipboard.writeText(i.value).then(() => toast('已复制'));
 });
 document.getElementById('btn-open-data').onclick = () => window.lfb.openDataDir();
+window.lfb.dataDir?.().then((r) => {
+  if (r?.ok) document.getElementById('set-data-dir').value = r.dataDir;
+}).catch(() => {});
 
 (async function init() {
   if (!window.lfb?.apiBase) {
