@@ -4,30 +4,28 @@
  * Types: http | https | socks5 | ssh  (mirrors the common antidetect set)
  * Everything stays local; no backend involved.
  */
-const fs = require('fs');
+const { privateDirectory, readJSON, writeJSON, credentials } = require('./privatefiles');
+const { validateProxy, proxyURL } = require('./proxyconfig');
 const path = require('path');
 const crypto = require('crypto');
 
-const TYPES = ['http', 'https', 'socks5', 'ssh'];
+const TYPES = ['http', 'https', 'socks5'];
 
 class ProxyStore {
-  constructor(dataDir) {
+  constructor(dataDir, secretStorage) {
     this.dataDir = dataDir;
     this.file = path.join(dataDir, 'proxies.json');
-    this.proxies = {};
-    this._load();
-  }
-
-  _load() {
-    try {
-      this.proxies = JSON.parse(fs.readFileSync(this.file, 'utf8'));
-    } catch {
-      this.proxies = {};
-    }
+    privateDirectory(dataDir);
+    this.codec = credentials(secretStorage);
+    this.proxies = readJSON(this.file, {});
+    for (const p of Object.values(this.proxies)) p.password = this.codec.decode(p.password);
+    if (Object.keys(this.proxies).length) this._save();
   }
 
   _save() {
-    fs.writeFileSync(this.file, JSON.stringify(this.proxies, null, 2));
+    const records = structuredClone(this.proxies);
+    for (const p of Object.values(records)) p.password = this.codec.encode(p.password);
+    writeJSON(this.file, records);
   }
 
   _newId() {
@@ -62,10 +60,10 @@ class ProxyStore {
       line = line.slice(at + 1);
     }
     const parts = line.split(':');
-    if (parts.length < 2) throw new Error(`cannot parse proxy line: ${line}`);
+    if (parts.length < 2) throw new Error('无法解析代理行');
     const host = parts[0].trim();
-    const port = parseInt(parts[1].trim(), 10);
-    if (!host || !Number.isFinite(port)) throw new Error(`cannot parse proxy line: ${line}`);
+    const port = Number(parts[1].trim());
+    if (!host || !Number.isFinite(port)) throw new Error('无效的代理主机或端口');
     let username = '';
     let password = '';
     if (auth) {
@@ -80,14 +78,14 @@ class ProxyStore {
   }
 
   add(spec) {
-    if (!TYPES.includes(spec.type)) throw Object.assign(new Error('bad proxy type'), { status: 400 });
+    validateProxy(spec);
     const id = this._newId();
     const now = new Date().toISOString();
     const rec = {
       id,
       type: spec.type,
       host: spec.host,
-      port: spec.port,
+      port: Number(spec.port),
       username: spec.username || '',
       password: '',
       remark: spec.remark || `${spec.host}:${spec.port}`,
@@ -98,17 +96,17 @@ class ProxyStore {
       createdAt: now,
       updatedAt: now,
     };
-    // NOTE: password kept in memory/file by explicit user action (they pasted it).
+    // The codec encrypts the on-disk password when desktop safeStorage is available.
     rec.password = spec.password || '';
     this.proxies[id] = rec;
-    this._save();
+    try { this._save(); } catch (error) { delete this.proxies[id]; throw error; }
     return this._public(rec);
   }
 
   bulkAdd(text, type = 'http') {
     const added = [];
     const errors = [];
-    for (const raw of String(text).split('\n')) {
+    for (const [index, raw] of String(text).split('\n').entries()) {
       const line = raw.trim();
       if (!line) continue;
       try {
@@ -118,7 +116,7 @@ class ProxyStore {
         }
         added.push(this.add({ ...p, type: p.type === 'http' ? type : p.type }));
       } catch (e) {
-        errors.push({ line, error: e.message });
+        errors.push({ line: index + 1, error: e.message });
       }
     }
     return { added, errors };
@@ -129,24 +127,24 @@ class ProxyStore {
   }
 
   get(id) {
-    const p = this.proxies[id];
-    return p ? this._public(p) : null;
+    return Object.hasOwn(this.proxies, id) ? this._public(this.proxies[id]) : null;
   }
 
   /** Internal: with password (for launching browsers). */
   getSecret(id) {
-    return this.proxies[id] || null;
+    return Object.hasOwn(this.proxies, id) ? structuredClone(this.proxies[id]) : null;
   }
 
   update(id, patch = {}) {
-    const p = this.proxies[id];
+    const p = this.getSecret(id);
     if (!p) return null;
-    const safe = { ...patch };
-    delete safe.id;
-    delete safe.createdAt;
-    Object.assign(p, safe, { updatedAt: new Date().toISOString(), status: 'unchecked', checkedAt: null });
-    this._save();
-    return this._public(p);
+    const safe = Object.fromEntries(['type', 'host', 'port', 'username', 'password', 'remark'].filter(k => Object.hasOwn(patch, k)).map(k => [k, patch[k]]));
+    const next = { ...p, ...safe, updatedAt: new Date().toISOString(), status: 'unchecked', checkedAt: null, exitIp: null, country: null, countryCode: null, timezone: null };
+    validateProxy(next);
+    next.port = Number(next.port);
+    this.proxies[id] = next;
+    try { this._save(); } catch (error) { this.proxies[id] = p; throw error; }
+    return this._public(next);
   }
 
   setCheckResult(id, result) {
@@ -171,19 +169,15 @@ class ProxyStore {
   /** Playwright-compatible proxy option from a stored proxy. */
   static toPlaywright(p) {
     if (!p) return null;
-    const server = `${p.type === 'ssh' ? 'http' : p.type}://${p.host}:${p.port}`;
+    const server = proxyURL(p);
     const opt = { server };
     if (p.username) opt.username = p.username;
     if (p.password) opt.password = p.password;
     return opt;
   }
 
-  /** curl -x argument for connectivity checks. */
-  static toCurlArg(p) {
-    const scheme = p.type === 'https' ? 'https' : p.type === 'socks5' ? 'socks5h' : 'http';
-    const auth = p.username ? `${encodeURIComponent(p.username)}:${encodeURIComponent(p.password)}@` : '';
-    return `${scheme}://${auth}${p.host}:${p.port}`;
-  }
+  /** Credentials must be supplied separately, never in process arguments. */
+  static toCurlArg(p) { return proxyURL(p, true); }
 }
 
 module.exports = { ProxyStore, TYPES };

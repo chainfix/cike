@@ -4,7 +4,7 @@
 const TIMEZONES = ['auto', 'America/New_York', 'America/Chicago', 'America/Denver', 'America/Los_Angeles',
   'Europe/London', 'Europe/Berlin', 'Europe/Moscow', 'Asia/Dubai', 'Asia/Shanghai',
   'Asia/Singapore', 'Asia/Tokyo', 'Australia/Sydney'];
-const TIMEZONE_LABELS = { auto: '跟随代理（推荐）' };
+const TIMEZONE_LABELS = { auto: '代理地区 / 无代理时跟随系统' };
 const VIEWPORTS = ['1440x900', '1366x768', '1536x864', '1920x1080', '1280x800', '2560x1440'];
 const LOCALES = ['auto', 'zh-CN', 'en-US', 'en-GB', 'de-DE', 'fr-FR', 'ja-JP'];
 
@@ -16,10 +16,10 @@ function apiBase() { return (window.lfb?.apiBase || '').replace(/\/$/, ''); }
 function token() { return window.lfb?.token || ''; }
 
 async function api(path, opts = {}) {
-  const url = apiBase() + path + (path.includes('?') ? '&' : '?') + 'token=' + encodeURIComponent(token());
+  const url = apiBase() + path;
   const res = await fetch(url, {
     ...opts,
-    headers: { 'Content-Type': 'application/json', ...(opts.headers || {}) },
+    headers: { 'Content-Type': 'application/json', 'X-API-Token': token(), ...(opts.headers || {}) },
   });
   const data = await res.json().catch(() => ({}));
   if (!res.ok || data.ok === false) throw new Error(data.error || `HTTP ${res.status}`);
@@ -80,7 +80,7 @@ function initNewPage() {
   }
   const locSel = document.getElementById('n-locale');
   if (!locSel.options.length) {
-    locSel.innerHTML = LOCALES.map((l) => `<option value="${l}" ${l === 'auto' ? 'selected' : ''}>${l === 'auto' ? '跟随代理（推荐）' : l}</option>`).join('');
+    locSel.innerHTML = LOCALES.map((l) => `<option value="${l}" ${l === 'auto' ? 'selected' : ''}>${l === 'auto' ? TIMEZONE_LABELS.auto : l}</option>`).join('');
   }
   const tzSel = document.getElementById('n-tz');
   if (!tzSel.options.length) {
@@ -167,20 +167,14 @@ async function saveNewProfile(openAfter = false) {
   const [vw, vh] = document.getElementById('n-vp').value.split('x').map(Number);
   const spec = {
     group: document.getElementById('n-group').value.trim(),
-    platform: document.getElementById('n-platform').value,
+    fingerprintMode: 'native',
     locale: document.getElementById('n-locale').value,
     timezone: document.getElementById('n-tz').value,
     viewport: { width: vw, height: vh },
     proxyId,
-    canvasNoise: document.getElementById('n-cnoise').value === '1',
+
     webrtc: document.getElementById('n-webrtc').value,
   };
-  const seed = document.getElementById('n-seed').value.trim();
-  if (seed !== '') spec.canvasSeed = parseInt(seed, 10);
-  const cores = document.getElementById('n-cores').value.trim();
-  if (cores !== '') spec.hardwareConcurrency = parseInt(cores, 10);
-  const mem = document.getElementById('n-memory').value.trim();
-  if (mem !== '') spec.deviceMemory = parseFloat(mem);
 
   try {
     const r = await api('/api/profiles', { method: 'POST', body: JSON.stringify(spec) });
@@ -208,27 +202,8 @@ async function openProfileWithCheck(profileId) {
     toast('请先在“设置”里下载 Chromium 内核', true);
     return;
   }
-  // Force proxy check if the profile uses a proxy
-  if (p.proxyId) {
-    toast('正在检测代理…');
-    try {
-      const r = await api('/api/proxies/check', {
-        method: 'POST',
-        body: JSON.stringify({ ids: [p.proxyId] }),
-      });
-      const res = r.results?.[0];
-      await loadProxies();
-      if (res?.status !== 'ok') {
-        const go = confirm(`代理检测失败：${res?.error || '未知错误'}\n\n指纹参数可能无法跟随代理。是否仍要打开？`);
-        if (!go) return;
-      } else {
-        toast(`代理正常：${res.exitIp} · ${res.country || ''}`);
-      }
-    } catch (err) {
-      const go = confirm(`代理检测出错：${err.message}\n\n是否仍要打开？`);
-      if (!go) return;
-    }
-  }
+  if (p.fingerprintMode !== 'native') { toast('请先在编辑中转换旧环境；站点数据会保留', true); return; }
+  if (p.proxyId || p.proxy) toast('正在验证代理，失败将阻止打开…');
   try {
     await api('/api/openBrowser', { method: 'POST', body: JSON.stringify({ profile_id: profileId }) });
     toast('环境已打开');
@@ -294,7 +269,7 @@ function renderProfiles() {
         <div class="name">${esc(p.name)}</div>
         <div class="meta">
           <span>${esc(p.group || '未分组')}</span>
-          <span>${p.platform === 'mac' ? 'macOS' : 'Windows'}</span>
+          <span>${p.fingerprintMode === 'native' ? '原生一致' : '旧环境 · 需要转换'}</span>
           <span>代理：${esc(p.proxyRemark || '无')}</span>
           <span class="pill ${p.open ? 'open' : 'closed'}">${p.open ? '运行中' : '已关闭'}</span>
         </div>
@@ -392,7 +367,7 @@ document.getElementById('group-toggle').addEventListener('click', (e) => {
 });
 
 function proxyOptionsHtml(selectedId) {
-  const opts = [`<option value="">不使用代理</option>`]
+  const opts = [`<option value="">不使用代理</option>`, ...(selectedId && selectedId !== '__custom' && !state.proxies.some(x => x.id === selectedId) ? [`<option value="${esc(selectedId)}" selected>原代理已删除 · 请重新绑定</option>`] : [])]
     .concat(state.proxies.map((x) => `<option value="${x.id}" ${x.id === selectedId ? 'selected' : ''}>${esc(x.remark)} (${esc(x.type)}://${esc(x.host)}:${x.port})</option>`));
   return `<optgroup label="已保存的代理">${opts.join('')}</optgroup><option value="__custom" ${selectedId === '__custom' ? 'selected' : ''}>自定义…</option>`;
 }
@@ -400,18 +375,19 @@ function proxyOptionsHtml(selectedId) {
 function openProfileModal(existing) {
   const p = existing || {};
   const isEdit = !!existing;
+  const locales = [...new Set([...LOCALES, ...(p.locale ? [p.locale] : [])])];
+  const timezones = [...new Set([...TIMEZONES, ...(p.timezone ? [p.timezone] : [])])];
+  const viewports = [...new Set([...VIEWPORTS, ...(p.viewport ? [`${p.viewport.width}x${p.viewport.height}`] : [])])];
   openModal(isEdit ? '编辑环境' : '新建环境', `
     <div class="field"><label>名称</label><input id="f-name" class="input" value="${esc(p.name || '')}" placeholder="例如：店铺-01"></div>
     <div class="field-row">
       <div class="field"><label>分组</label><input id="f-group" class="input" list="f-group-list" value="${esc(p.group || '')}" placeholder="选填，可选已有或输入新的"><datalist id="f-group-list">${[...new Set(state.profiles.map((x) => x.group).filter(Boolean))].sort().map((g) => `<option value="${esc(g)}">`).join('')}</datalist></div>
-      <div class="field"><label>平台</label><select id="f-platform" class="input">
-        <option value="mac" ${p.platform !== 'win' ? 'selected' : ''}>macOS</option>
-        <option value="win" ${p.platform === 'win' ? 'selected' : ''}>Windows</option>
-      </select></div>
+      <div class="field"><label>指纹策略</label><p class="hint">原生一致：使用本机平台和硬件属性。</p></div>
     </div>
+    ${isEdit && p.fingerprintMode !== 'native' ? '<p class="hint">旧环境已暂停启动。转换会取消原有系统、CPU、内存、Canvas 和 Audio 伪装，保留 Cookie、站点数据、代理及窗口设置。原指纹配置会留存备查。</p><label><input id="f-convert" type="checkbox"> 我已了解指纹会改变，转换为原生一致模式</label>' : ''}
     <div class="field"><label>代理</label>
       <div style="display:flex;gap:8px">
-        <select id="f-proxy" class="input" style="flex:1">${proxyOptionsHtml(p.proxyId || '')}</select>
+        <select id="f-proxy" class="input" style="flex:1">${proxyOptionsHtml(p.proxyId || (p.proxy ? '__custom' : ''))}</select>
         <button type="button" id="f-proxy-check" class="btn" style="flex-shrink:0">检测</button>
       </div>
       <div id="f-proxy-check-result" style="font-size:12px;color:var(--muted);margin-top:4px"></div>
@@ -429,25 +405,17 @@ function openProfileModal(existing) {
     </div>
     <details class="advanced"><summary>指纹选项</summary>
       <div class="field-row" style="margin-top:10px">
-        <div class="field"><label>语言</label><select id="f-locale" class="input">${LOCALES.map((l) => `<option value="${l}" ${((p.locale || 'auto') === l) ? 'selected' : ''}>${l === 'auto' ? '跟随代理（推荐）' : l}</option>`).join('')}</select></div>
-        <div class="field"><label>时区</label><select id="f-tz" class="input">${TIMEZONES.map((t) => `<option value="${t}" ${((p.timezone || 'auto') === t) ? 'selected' : ''}>${TIMEZONE_LABELS[t] || t}</option>`).join('')}</select></div>
+        <div class="field"><label>语言</label><select id="f-locale" class="input">${locales.map((l) => `<option value="${esc(l)}" ${((p.locale || 'auto') === l) ? 'selected' : ''}>${l === 'auto' ? TIMEZONE_LABELS.auto : esc(l)}</option>`).join('')}</select></div>
+        <div class="field"><label>时区</label><select id="f-tz" class="input">${timezones.map((t) => `<option value="${esc(t)}" ${((p.timezone || 'auto') === t) ? 'selected' : ''}>${TIMEZONE_LABELS[t] || esc(t)}</option>`).join('')}</select></div>
       </div>
       <div class="field-row">
-        <div class="field"><label>分辨率</label><select id="f-vp" class="input">${VIEWPORTS.map((v) => `<option ${`${p.viewport?.width}x${p.viewport?.height}` === v ? 'selected' : ''}>${v}</option>`).join('')}</select></div>
-        <div class="field"><label>Canvas 噪声 <span class="sub">（去关联用，browserscan -5%）</span></label><select id="f-cnoise" class="input">
-          <option value="0" ${!p.canvasNoise ? 'selected' : ''}>关闭（指纹最真）</option>
-          <option value="1" ${p.canvasNoise ? 'selected' : ''}>开启（环境间去关联）</option>
-        </select></div>
-      </div>
-      <div class="field-row">
-        <div class="field"><label>Canvas 种子 <span class="sub">（噪声开启时生效，留空 = 随机）</span></label><input id="f-seed" class="input" value="${p.canvasSeed ?? ''}" placeholder="自动"></div>
-        <div class="field"><label>CPU 核心数</label><input id="f-cores" class="input" value="${p.hardwareConcurrency ?? ''}" placeholder="自动"></div>
+        <div class="field"><label>分辨率</label><select id="f-vp" class="input">${viewports.map((v) => `<option ${`${p.viewport?.width}x${p.viewport?.height}` === v ? 'selected' : ''}>${esc(v)}</option>`).join('')}</select></div>
       </div>
       <div class="field-row">
         <div class="field"><label>WebRTC</label><select id="f-webrtc" class="input">
-          <option value="auto" ${!p.webrtc || p.webrtc === 'auto' ? 'selected' : ''}>自动（有代理时防泄漏）</option>
+          <option value="auto" ${!p.webrtc || p.webrtc === 'auto' ? 'selected' : ''}>自动（限制直连 UDP）</option>
           <option value="default" ${p.webrtc === 'default' ? 'selected' : ''}>默认</option>
-          <option value="disabled" ${p.webrtc === 'disabled' ? 'selected' : ''}>禁用</option>
+          <option value="restricted" ${['restricted', 'disabled'].includes(p.webrtc) ? 'selected' : ''}>限制直连 UDP（可能影响通话）</option>
         </select></div>
       </div>
     </details>
@@ -458,6 +426,16 @@ function openProfileModal(existing) {
   `, (body, close) => {
     const proxySel = body.querySelector('#f-proxy');
     const customBox = body.querySelector('#f-custom-proxy');
+    if (p.proxy) {
+      try {
+        const u = new URL(p.proxy.server);
+        body.querySelector('#f-ptype').value = u.protocol.slice(0, -1);
+        body.querySelector('#f-phost').value = u.hostname;
+        body.querySelector('#f-pport').value = u.port;
+        body.querySelector('#f-puser').value = p.proxy.username || '';
+        body.querySelector('#f-ppass').placeholder = p.proxy.hasAuth ? '留空保留原密码' : '';
+      } catch { /* backend will report malformed legacy proxy */ }
+    }
     const syncCustom = () => customBox.classList.toggle('hidden', proxySel.value !== '__custom');
     proxySel.addEventListener('change', syncCustom); syncCustom();
     // Proxy check button in the profile modal
@@ -495,29 +473,25 @@ function openProfileModal(existing) {
     };
     body.querySelector('#m-cancel').onclick = close;
     body.querySelector('#m-save').onclick = async () => {
+      if (isEdit && p.fingerprintMode !== 'native' && !body.querySelector('#f-convert').checked) { toast('请先确认转换说明', true); return; }
       const name = body.querySelector('#f-name').value.trim();
       if (!name) { toast('请填写名称', true); return; }
       const [vw, vh] = body.querySelector('#f-vp').value.split('x').map(Number);
       const spec = {
         name,
         group: body.querySelector('#f-group').value.trim(),
-        platform: body.querySelector('#f-platform').value,
+        fingerprintMode: 'native',
         locale: body.querySelector('#f-locale').value,
         timezone: body.querySelector('#f-tz').value,
         viewport: { width: vw, height: vh },
       };
-      const seed = body.querySelector('#f-seed').value.trim();
-      if (seed !== '') spec.canvasSeed = parseInt(seed, 10);
-      spec.canvasNoise = body.querySelector('#f-cnoise').value === '1';
-      const cores = body.querySelector('#f-cores').value.trim();
-      if (cores !== '') spec.hardwareConcurrency = parseInt(cores, 10);
       spec.webrtc = body.querySelector('#f-webrtc').value;
       if (proxySel.value === '__custom') {
         spec.proxyId = null;
         spec.proxy = {
           server: `${body.querySelector('#f-ptype').value}://${body.querySelector('#f-phost').value.trim()}:${body.querySelector('#f-pport').value.trim()}`,
           username: body.querySelector('#f-puser').value.trim() || undefined,
-          password: body.querySelector('#f-ppass').value || undefined,
+          ...(body.querySelector('#f-ppass').value ? { password: body.querySelector('#f-ppass').value } : {}),
         };
       } else {
         spec.proxyId = proxySel.value || null;
@@ -775,8 +749,8 @@ async function refreshChromiumStatus() {
     const btn = document.getElementById('btn-download-browser');
     if (state.chromium.installed) {
       el.innerHTML = `<div><span class="pill ok">已安装</span></div><div class="sub" style="margin-top:6px">版本 ${esc(state.chromium.version || '')}</div>`;
-      btn.disabled = true;
-      btn.textContent = 'Chromium 已安装';
+      btn.disabled = !state.chromium.updateAvailable;
+      btn.textContent = state.chromium.updateAvailable ? `更新至 ${state.chromium.targetVersion}` : 'Chromium 已安装';
     } else {
       el.innerHTML = `<div><span class="pill unchecked">未安装</span></div>`;
       btn.disabled = false;

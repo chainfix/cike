@@ -1,56 +1,62 @@
 'use strict';
-/**
- * Proxy connectivity check via system curl (available on macOS and Linux).
- * Reports exit IP (and country when the free geo lookup answers).
- * SSH-type proxies are not checkable this way and are skipped.
- */
-const { execFile } = require('child_process');
-const { ProxyStore } = require('./proxystore');
+const { spawn } = require('child_process');
+const net = require('net');
+const { proxyURL, validateProxy } = require('./proxyconfig');
 const { SocksForwarder } = require('./socksfwd');
+const quote = value => '"' + String(value).replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\n/g, '\\n').replace(/\r/g, '\\r') + '"';
 
-function curl(args, timeoutMs = 15000) {
+function curl(proxy, url, timeoutMs = 12000) {
+  // -q disables ~/.curlrc. Empty noproxy prevents NO_PROXY from silently
+  // bypassing the selected proxy. Secrets go over stdin, never argv/errors.
+  const config = ['silent', 'show-error', 'fail', `max-time = ${Math.ceil(timeoutMs / 1000)}`,
+    'connect-timeout = 8', 'noproxy = ""', `proxy = ${quote(proxyURL(proxy, true))}`,
+    `url = ${quote(url)}`, ...(proxy.username || proxy.password ? [`proxy-user = ${quote(`${proxy.username || ''}:${proxy.password || ''}`)}`] : [])].join('\n') + '\n';
   return new Promise((resolve, reject) => {
-    execFile('curl', ['-sS', '--max-time', String(Math.ceil(timeoutMs / 1000)), ...args],
-      { timeout: timeoutMs + 2000, maxBuffer: 1024 * 1024 },
-      (err, stdout, stderr) => {
-        if (err) return reject(new Error((stderr || err.message).trim().split('\n').pop()));
-        resolve(stdout.trim());
-      });
+    const child = spawn('/usr/bin/curl', ['-q', '--config', '-'], {
+      env: { PATH: '/usr/bin:/bin', LANG: 'C', HOME: process.env.HOME }, stdio: ['pipe', 'pipe', 'ignore'],
+    });
+    let output = '', tooLarge = false;
+    const timer = setTimeout(() => child.kill('SIGKILL'), timeoutMs + 1000);
+    child.stdout.on('data', chunk => {
+      output += chunk.toString();
+      if (output.length > 256 * 1024) { tooLarge = true; child.kill('SIGKILL'); }
+    });
+    child.stdin.on('error', () => {});
+    child.once('error', () => { clearTimeout(timer); reject(new Error('无法启动系统 curl')); });
+    child.once('close', code => {
+      clearTimeout(timer);
+      if (code || tooLarge) reject(new Error(`代理请求失败（curl ${code ?? 'timeout'}）；请检查连接、认证和证书`));
+      else resolve(output.trim());
+    });
+    child.stdin.end(config);
   });
 }
-
-/**
- * Check one proxy. Returns { status: 'ok'|'failed', exitIp, country, timezone, error }.
- */
 async function checkProxy(proxy, settings) {
-  if (proxy.type === 'ssh') {
-    return { status: 'unchecked', error: 'ssh proxies cannot be checked with curl' };
-  }
   let forwarder;
-  if (proxy.type === 'socks5' && settings?.get().socksViaSystemProxy) {
-    const systemProxy = await settings.route(proxy.host, proxy.port);
-    forwarder = await SocksForwarder.start({ host: proxy.host, port: proxy.port, username: proxy.username, password: proxy.password, systemProxy });
-  }
-  const px = forwarder ? `http://127.0.0.1:${forwarder.port}` : ProxyStore.toCurlArg(proxy);
   try {
-    const exitIp = await curl(['-x', px, 'https://api.ipify.org']);
-    if (!/^[0-9a-fA-F.:]+$/.test(exitIp) || exitIp.length > 45) {
-      throw new Error('unexpected response from ip echo');
+    validateProxy(proxy);
+    let effective = proxy;
+    if (proxy.type === 'socks5' && settings?.get().socksViaSystemProxy) {
+      const systemProxy = await settings.route(proxy.host, proxy.port);
+      forwarder = await SocksForwarder.start({ ...proxy, systemProxy });
+      effective = { type: 'http', host: '127.0.0.1', port: forwarder.port };
     }
+    // Both endpoints are HTTPS and always use exactly the selected route.
+    const exitIp = await curl(effective, 'https://api.ipify.org');
+    if (!net.isIP(exitIp)) throw new Error('代理 IP 检测响应无效');
     let country = null, countryCode = null, timezone = null;
     try {
-      const geo = await curl(['-x', px, `http://ip-api.com/json/${exitIp}?fields=country,countryCode,timezone`], 10000);
-      const j = JSON.parse(geo);
-      country = j.country || null;
-      countryCode = j.countryCode || null;
-      timezone = j.timezone || null;
-    } catch { /* geo is best-effort */ }
+      const geo = JSON.parse(await curl(effective, `https://ipwho.is/${encodeURIComponent(exitIp)}`));
+      if (geo.success !== false && geo.ip === exitIp) {
+        country = typeof geo.country === 'string' ? geo.country : null;
+        countryCode = /^[A-Z]{2}$/.test(geo.country_code) ? geo.country_code : null;
+        timezone = geo.timezone?.id || null;
+        if (timezone) new Intl.DateTimeFormat('en', { timeZone: timezone }).format();
+      }
+    } catch { timezone = null; }
     return { status: 'ok', exitIp, country, countryCode, timezone };
-  } catch (e) {
-    return { status: 'failed', exitIp: null, country: null, countryCode: null, timezone: null, error: e.message };
-  } finally {
-    await forwarder?.stop();
-  }
+  } catch (error) {
+    return { status: 'failed', exitIp: null, country: null, countryCode: null, timezone: null, error: error.message };
+  } finally { await forwarder?.stop(); }
 }
-
-module.exports = { checkProxy };
+module.exports = { checkProxy, curl };

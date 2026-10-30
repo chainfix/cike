@@ -3,27 +3,27 @@
     "@koa/router": "^12.0.1",
     "koa": "^2.15.3",
     "koa-bodyparser": "^4.4.1",
-    "playwright": "^1.49.1",
-    "playwright-extra": "^4.3.6",
-    "puppeteer-extra-plugin-stealth": "^2.11.2"
+    "playwright": "1.64.1"
   },
   "description": "Local multi-profile fingerprint browser with a local automation API. Clean-room implementation for learning/research. No vendor backend required.",
   "engines": {
-    "node": ">=22"
+    "node": ">=22.12.0"
   },
   "license": "MIT",
   "main": "electron/main.js",
   "name": "cike",
   "scripts": {
+    "test": "node --test --test-concurrency=1 test/security.test.js test/network.test.js test/runtime.test.js test/downloads.js",
+    "test:desktop": "node --test test/desktop.test.js",
     "smoke": "node test/smoke.js",
     "start": "node src/server.js",
     "electron": "electron .",
     "pack:mac-arm64": "electron-packager . CIKE --icon=electron/assets/icon.icns --platform=darwin --arch=arm64 --out=dist --overwrite --prune --ignore=\"^/(test|.browsers|dist|.*.zip$)\""
   },
   "type": "commonjs",
-  "version": "0.5.16",
+  "version": "0.6.0",
   "devDependencies": {
-    "electron": "^44.9.0",
-    "electron-packager": "^17.1.2"
+    "electron": "44.10.0",
+    "electron-packager": "npm:@electron/packager@20.3.0"
   }
 }

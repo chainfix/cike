@@ -1,5 +1,5 @@
 'use strict';
-const fs = require('fs');
+const { privateDirectory, readJSON, writeJSON } = require('./privatefiles');
 const path = require('path');
 const { parseSystemProxy } = require('./proxyroute');
 class Settings {
@@ -7,15 +7,14 @@ class Settings {
     this.file = path.join(dir, 'settings.json');
     this.resolveSystemProxy = resolveSystemProxy;
     this.value = { socksViaSystemProxy: false };
-    try { this.value.socksViaSystemProxy = JSON.parse(fs.readFileSync(this.file, 'utf8')).socksViaSystemProxy === true; }
-    catch (e) { if (e.code !== 'ENOENT') throw e; }
+    privateDirectory(dir);
+    this.value.socksViaSystemProxy = readJSON(this.file, {}).socksViaSystemProxy === true;
   }
   get() { return { ...this.value }; }
   set(value) {
     if (typeof value.socksViaSystemProxy !== 'boolean') throw new Error('请选择是否通过系统代理');
     const next = { socksViaSystemProxy: value.socksViaSystemProxy };
-    fs.writeFileSync(this.file + '.tmp', JSON.stringify(next, null, 2), { mode: 0o600 });
-    fs.renameSync(this.file + '.tmp', this.file);
+    writeJSON(this.file, next);
     this.value = next;
     return this.get();
   }

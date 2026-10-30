@@ -1,218 +1,106 @@
 'use strict';
-/**
- * First-run Chromium acquisition for the packaged app.
- *
- * Downloads Playwright's Chromium build (Chrome-for-Testing layout) for the
- * current platform into the app data dir:
- *   <dataDir>/browsers/chromium/...
- * and records the executable path in:
- *   <dataDir>/browsers/chromium-executable.txt
- *
- * Uses only Node https + the OS unzip tool (macOS ships /usr/bin/unzip).
- * Fully self-contained: does not depend on Playwright's internal layout.
- */
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const https = require('https');
 const { execFile } = require('child_process');
-
-function browsersJson() {
-  const pkgPath = require.resolve('playwright-core/package.json');
-  const p = path.join(path.dirname(pkgPath), 'browsers.json');
-  return JSON.parse(fs.readFileSync(p, 'utf8'));
-}
-
+const { promisify } = require('util');
+const { pipeline } = require('stream/promises');
+const exec = promisify(execFile);
+const { privateDirectory, writePrivate } = require('../src/privatefiles');
+const inProgress = new Map();
 function chromiumEntry() {
-  const j = browsersJson();
-  const e = (j.browsers || []).find((b) => b.name === 'chromium');
-  if (!e) throw new Error('chromium entry not found in playwright browsers.json');
-  return e;
+  const file = path.join(path.dirname(require.resolve('playwright-core/package.json')), 'browsers.json');
+  return JSON.parse(fs.readFileSync(file)).browsers.find(b => b.name === 'chromium');
 }
-
 function cftPlatform() {
-  const key = `${process.platform}-${process.arch}`;
-  const map = {
-    'darwin-arm64': 'mac-arm64',
-    'darwin-x64': 'mac-x64',
-    'linux-x64': 'linux64',
-    'win32-x64': 'win64',
-  };
-  const p = map[key];
-  if (!p) throw new Error('unsupported platform for chromium download: ' + key);
-  return p;
+  const platform = { 'darwin-arm64': 'mac-arm64', 'darwin-x64': 'mac-x64', 'linux-x64': 'linux64', 'win32-x64': 'win64' }[`${process.platform}-${process.arch}`];
+  if (!platform) throw new Error('不支持此平台的 Chromium 下载');
+  return platform;
 }
-
-function cftFileName() {
-  const p = cftPlatform();
-  if (p === 'mac-arm64') return 'chrome-mac-arm64.zip';
-  if (p === 'mac-x64') return 'chrome-mac-x64.zip';
-  if (p === 'linux64') return 'chrome-linux64.zip';
-  return 'chrome-win64.zip';
-}
-
 function downloadUrl() {
-  const { browserVersion } = chromiumEntry();
   const host = process.env.PLAYWRIGHT_DOWNLOAD_HOST || 'https://cdn.playwright.dev';
-  return `${host}/builds/cft/${browserVersion}/${cftPlatform()}/${cftFileName()}`;
+  const platform = cftPlatform();
+  return `${host}/builds/cft/${chromiumEntry().browserVersion}/${platform}/chrome-${platform}.zip`;
 }
-
-function browserRoot(dataDir) {
-  return path.join(dataDir, 'browsers', 'chromium');
-}
-
-function executableMarker(dataDir) {
-  return path.join(dataDir, 'browsers', 'chromium-executable.txt');
-}
-
-async function chromiumStatus(dataDir) {
+function browserRoot(dir) { return path.join(dir, 'browsers'); }
+function executableMarker(dir) { return path.join(browserRoot(dir), 'chromium-executable.txt'); }
+async function chromiumStatus(dir) {
+  const targetVersion = chromiumEntry().browserVersion;
   try {
-    const exe = fs.readFileSync(executableMarker(dataDir), 'utf8').trim();
-    if (exe && fs.existsSync(exe)) {
-      return { installed: true, executable: exe, version: chromiumEntry().browserVersion };
-    }
-  } catch { /* not installed */ }
-  return { installed: false, executable: null, version: chromiumEntry().browserVersion };
+    const executable = fs.readFileSync(executableMarker(dir), 'utf8').trim();
+    const { stdout } = await exec(executable, ['--version'], { timeout: 5000, maxBuffer: 65536 });
+    const version = stdout.match(/\d+\.\d+\.\d+\.\d+/)?.[0];
+    if (version) return { installed: true, executable, version, targetVersion, updateAvailable: version !== targetVersion };
+  } catch { /* not installed or unusable */ }
+  return { installed: false, executable: null, version: null, targetVersion, updateAvailable: true };
 }
-
-function downloadFile(url, dest, onProgress) {
-  return new Promise((resolve, reject) => {
-    const out = fs.createWriteStream(dest);
-    const req = https.get(url, { headers: { 'User-Agent': 'CIKE/1.0' } }, (res) => {
-      if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
-        out.close();
-        fs.unlink(dest, () => {});
-        return downloadFile(res.headers.location, dest, onProgress).then(resolve, reject);
-      }
-      if (res.statusCode !== 200) {
-        out.close();
-        return reject(new Error(`download failed: HTTP ${res.statusCode}`));
-      }
-      const total = parseInt(res.headers['content-length'] || '0', 10);
-      let done = 0;
-      res.on('data', (c) => {
-        done += c.length;
-        if (total && onProgress) onProgress({ done, total, pct: Math.round((done / total) * 100) });
-      });
-      res.pipe(out);
-      out.on('finish', () => resolve(dest));
-    });
-    req.on('error', (e) => {
-      out.close();
-      reject(e);
-    });
-    req.setTimeout(120000, () => req.destroy(new Error('download timed out')));
+async function downloadFile(url, dest, onProgress, redirects = 0) {
+  if (redirects > 5 || new URL(url).protocol !== 'https:') throw new Error('内核下载必须使用 HTTPS，且不能无限重定向');
+  const response = await new Promise((resolve, reject) => {
+    const req = https.get(url, { headers: { 'User-Agent': 'CIKE' } }, resolve);
+    req.on('error', reject);
+    req.setTimeout(120000, () => req.destroy(new Error('内核下载超时')));
   });
-}
-
-function unzip(zipPath, destDir) {
-  return new Promise((resolve, reject) => {
-    fs.mkdirSync(destDir, { recursive: true });
-    const unzipBin = process.platform === 'darwin' ? '/usr/bin/unzip' : 'unzip';
-    execFile(unzipBin, ['-q', '-o', zipPath, '-d', destDir], { timeout: 600000 }, (err) => {
-      if (err) return reject(new Error('unzip failed: ' + err.message));
-      resolve();
-    });
-  });
-}
-
-/** Locate the browser executable inside the extracted tree. */
-function findExecutable(root) {
-  const hits = [];
-  const walk = (dir) => {
-    let entries;
-    try {
-      entries = fs.readdirSync(dir, { withFileTypes: true });
-    } catch { return; }
-    for (const e of entries) {
-      const full = path.join(dir, e.name);
-      if (e.isDirectory()) {
-        if (e.name.endsWith('.app')) {
-          const macos = path.join(full, 'Contents', 'MacOS');
-          try {
-            const bins = fs.readdirSync(macos).filter((f) => !f.startsWith('.'));
-            if (bins.length) hits.push(path.join(macos, bins[0]));
-          } catch { /* not an app bundle */ }
-        } else if (hits.length === 0) {
-          walk(full);
-        }
-      } else if (process.platform === 'linux' && e.name === 'chrome') {
-        hits.push(full);
-      } else if (process.platform === 'win32' && /^chrome\.exe$/i.test(e.name)) {
-        hits.push(full);
-      }
-    }
-  };
-  walk(root);
-  return hits[0] || null;
-}
-
-/**
- * Ensure Chromium is present; download + extract with progress callback.
- * Returns the executable path.
- */
-async function downloadChromium(dataDir, onProgress) {
-  const st = await chromiumStatus(dataDir);
-  if (st.installed) return st.executable;
-  const url = downloadUrl();
-  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'lfb-chromium-'));
-  const zipPath = path.join(tmp, 'chromium.zip');
-  try {
-    await downloadFile(url, zipPath, onProgress);
-    const dest = browserRoot(dataDir);
-    fs.rmSync(dest, { recursive: true, force: true });
-    await unzip(zipPath, dest);
-    const exe = findExecutable(dest);
-    if (!exe) throw new Error('downloaded archive does not contain a browser executable');
-    try { fs.chmodSync(exe, 0o755); } catch { /* ignore */ }
-    // Brand the downloaded Chromium.app with the CK icon so opened browser
-    // windows show CK in the Dock instead of the stock Chromium icon.
-    try { brandChromiumApp(dest); } catch (e) { console.warn('[chromium] icon branding failed:', e.message); }
-    fs.mkdirSync(path.dirname(executableMarker(dataDir)), { recursive: true });
-    fs.writeFileSync(executableMarker(dataDir), exe + '\n');
-    if (onProgress) onProgress({ done: 1, total: 1, pct: 100 });
-    return exe;
-  } finally {
-    fs.rmSync(tmp, { recursive: true, force: true });
+  if ([301, 302, 303, 307, 308].includes(response.statusCode) && response.headers.location) {
+    response.resume();
+    return downloadFile(new URL(response.headers.location, url).href, dest, onProgress, redirects + 1);
   }
+  if (response.statusCode !== 200) { response.resume(); throw new Error(`内核下载失败：HTTP ${response.statusCode}`); }
+  const total = Number(response.headers['content-length']) || 0;
+  let done = 0;
+  response.on('data', chunk => {
+    done += chunk.length;
+    if (done > 1024 * 1024 * 1024) response.destroy(new Error('内核安装包异常过大'));
+    onProgress?.({ done, total, pct: total ? Math.round(done / total * 100) : 0 });
+  });
+  await pipeline(response, fs.createWriteStream(dest, { flags: 'wx', mode: 0o600 }));
 }
-
-/**
- * Replace the icon of the downloaded Chromium.app with the CK brand icon.
- * macOS only; no-op on other platforms or if the icon asset is missing.
- */
-function brandChromiumApp(root) {
-  if (process.platform !== 'darwin') return;
-  // Find the .app bundle
-  let appPath = null;
-  const walk = (dir) => {
-    let entries;
-    try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
-    for (const e of entries) {
-      const full = path.join(dir, e.name);
-      if (e.isDirectory()) {
-        if (e.name.endsWith('.app')) { appPath = full; return; }
-        if (!appPath) walk(full);
+function findExecutable(root) {
+  for (const e of fs.readdirSync(root, { withFileTypes: true })) {
+    const full = path.join(root, e.name);
+    if (e.isDirectory()) {
+      if (e.name.endsWith('.app')) {
+        const macos = path.join(full, 'Contents', 'MacOS');
+        return path.join(macos, fs.readdirSync(macos).find(n => !n.startsWith('.')));
       }
-    }
-  };
-  walk(root);
-  if (!appPath) return;
-  // Locate our CK icon (packaged with the app)
-  const iconSrc = path.join(__dirname, 'assets', 'icon.icns');
-  if (!fs.existsSync(iconSrc)) return;
-  // Find the icon file referenced by Info.plist, or fall back to app.icns
-  let iconName = 'app.icns';
-  try {
-    const plistPath = path.join(appPath, 'Contents', 'Info.plist');
-    const plist = fs.readFileSync(plistPath, 'utf8');
-    const m = plist.match(/<key>CFBundleIconFile<\/key>\s*<string>([^<]+)<\/string>/);
-    if (m) iconName = m[1].endsWith('.icns') ? m[1] : m[1] + '.icns';
-  } catch { /* use default */ }
-  const iconDest = path.join(appPath, 'Contents', 'Resources', iconName);
-  fs.copyFileSync(iconSrc, iconDest);
-  // Touch the bundle so Finder picks up the change
-  try { fs.utimesSync(appPath, new Date(), new Date()); } catch { /* ignore */ }
+      const found = findExecutable(full); if (found) return found;
+    } else if (e.isFile() && ((process.platform === 'linux' && e.name === 'chrome') || (process.platform === 'win32' && e.name === 'chrome.exe'))) return full;
+  }
+  return null;
 }
-
-module.exports = { chromiumStatus, downloadChromium, downloadUrl, executableMarker, brandChromiumApp, browserRoot };
+async function install(dir, onProgress) {
+  const status = await chromiumStatus(dir);
+  if (status.installed && !status.updateAvailable) return status.executable;
+  privateDirectory(browserRoot(dir));
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'cike-chromium-'));
+  const staging = fs.mkdtempSync(path.join(browserRoot(dir), '.install-'));
+  try {
+    const zip = path.join(tmp, 'chromium.zip');
+    await downloadFile(downloadUrl(), zip, onProgress);
+    await exec('/usr/bin/unzip', ['-q', zip, '-d', staging], { timeout: 600000 });
+    const executable = findExecutable(staging);
+    if (!executable) throw new Error('安装包中没有 Chromium');
+    // Playwright's CfT archive may omit bundle resource seals. Do not repair
+    // that by re-signing locally or claim Developer ID validation: transport
+    // trust is HTTPS to the configured CDN, followed by a version check.
+    const { stdout } = await exec(executable, ['--version'], { timeout: 10000 });
+    if (!stdout.includes(chromiumEntry().browserVersion)) throw new Error('下载的内核版本不匹配');
+    // Keep the downloaded bundle unchanged, including its icon. Old
+    // kernels remain available until the new version is fully verified.
+    const destination = path.join(browserRoot(dir), `${chromiumEntry().browserVersion}-${path.basename(staging).slice(9)}`);
+    const relative = path.relative(staging, executable);
+    fs.renameSync(staging, destination);
+    const final = path.join(destination, relative);
+    writePrivate(executableMarker(dir), final + '\n');
+    onProgress?.({ done: 1, total: 1, pct: 100 });
+    return final;
+  } finally { fs.rmSync(tmp, { recursive: true, force: true }); fs.rmSync(staging, { recursive: true, force: true }); }
+}
+async function downloadChromium(dir, onProgress) {
+  if (inProgress.has(dir)) return inProgress.get(dir);
+  const promise = install(dir, onProgress);
+  inProgress.set(dir, promise);
+  try { return await promise; } finally { inProgress.delete(dir); }
+}
+module.exports = { chromiumStatus, downloadChromium, downloadUrl, executableMarker, browserRoot };

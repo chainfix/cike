@@ -48,7 +48,8 @@ function buffered(socket) {
       resolve(all.subarray(0, count));
       return true;
     };
-    const onData = chunk => { queue.push(chunk); take(); };
+    socket.pause();
+    const onData = chunk => { socket.pause(); queue.push(chunk); if (!take()) socket.resume(); };
     const onError = error => { cleanup(); reject(error); };
     const onClose = () => onError(new Error('代理连接已关闭'));
     const cleanup = () => {
@@ -59,7 +60,7 @@ function buffered(socket) {
     socket.on('data', onData);
     socket.once('error', onError);
     socket.once('close', onClose);
-    take();
+    if (!take()) socket.resume();
   });
   return {
     read,
@@ -67,15 +68,17 @@ function buffered(socket) {
       const rest = Buffer.concat(queue);
       queue.length = 0;
       if (rest.length) socket.unshift(rest);
-      socket.resume();
+      socket.pause();
     },
   };
 }
 
 async function socks(socket, proxy, destination) {
   const io = buffered(socket);
+  const timer = setTimeout(() => socket.destroy(new Error('SOCKS5 握手超时')), 15000);
   try {
-    socket.write(Buffer.from([5, 1, proxy.username ? 2 : 0]));
+    if (Buffer.byteLength(proxy.username || '') > 255 || Buffer.byteLength(proxy.password || '') > 255 || Buffer.byteLength(destination.host) > 255) throw new Error('SOCKS5 字段过长');
+    socket.write(Buffer.from([5, 1, proxy.username || proxy.password ? 2 : 0]));
     const method = await io.read(2);
     if (method[0] !== 5) throw new Error('SOCKS5 版本无效');
     if (method[1] === 2) {
@@ -95,6 +98,7 @@ async function socks(socket, proxy, destination) {
     socket.write(request);
     const reply = await io.read(4);
     if (reply[0] !== 5 || reply[1] !== 0) throw new Error(`SOCKS5 连接失败（${reply[1]}）`);
+    if (![1, 3, 4].includes(reply[3])) throw new Error('SOCKS5 地址类型无效');
     const length = reply[3] === 1 ? 4 : reply[3] === 4 ? 16 : (await io.read(1))[0];
     await io.read(length + 2);
     io.release();
@@ -102,7 +106,7 @@ async function socks(socket, proxy, destination) {
   } catch (error) {
     socket.destroy();
     throw error;
-  }
+  } finally { clearTimeout(timer); }
 }
 
 async function connectSystem(proxy, host, port) {

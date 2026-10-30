@@ -41,51 +41,45 @@ class SocksForwarder {
       if (client.destroyed) { upstream.destroy(); return; }
       client.write('HTTP/1.1 200 Connection Established\r\n\r\n');
       if (head.length) upstream.write(head);
-      client.on('data', chunk => upstream.write(chunk));
-      upstream.on('data', chunk => client.write(chunk));
+      client.pipe(upstream);
+      upstream.pipe(client);
       client.once('close', () => upstream.destroy());
       upstream.once('close', () => client.destroy());
     } catch { client.end('HTTP/1.1 502 Bad Gateway\r\nConnection: close\r\n\r\n'); }
   }
   async request(req, res) {
-    let socket;
+    const agent = new http.Agent({ keepAlive: false });
+    agent.createConnection = (options, callback) => {
+      this.connect(options.host, options.port).then(socket => { callback(null, socket); socket.resume(); }, callback);
+    };
     try {
       const target = new URL(req.url);
-      if (target.protocol !== 'http:') throw new Error('unsupported protocol');
-      socket = await this.connect(target.hostname.replace(/^\[|\]$/g, ''), Number(target.port) || 80);
-      if (req.destroyed || res.destroyed) { socket.destroy(); return; }
-      const headers = Object.entries({ ...req.headers, host: target.host, connection: 'close' })
-        .filter(([name]) => !['proxy-authorization', 'proxy-connection'].includes(name));
-      socket.write(`${req.method} ${target.pathname}${target.search} HTTP/1.1\r\n${headers.map(([name, value]) => `${name}: ${value}`).join('\r\n')}\r\n\r\n`);
-      req.on('data', chunk => socket.write(chunk));
-      const chunks = [];
-      let header = Buffer.alloc(0);
-      const onData = chunk => {
-        chunks.push(chunk);
-        header = Buffer.concat(chunks);
-        const split = header.indexOf('\r\n\r\n');
-        if (split < 0) return;
-        socket.off('data', onData);
-        const head = header.subarray(0, split).toString('latin1');
-        const status = Number(head.split('\r\n', 1)[0].split(' ')[1]);
-        const fields = Object.fromEntries(head.split('\r\n').slice(1).map(line => {
-          const index = line.indexOf(':');
-          return [line.slice(0, index).trim().toLowerCase(), line.slice(index + 1).trim()];
-        }));
-        res.writeHead(status, fields.location ? { Location: fields.location } : undefined);
-        const body = header.subarray(split + 4);
-        if (body.length) res.write(body);
-        socket.pipe(res);
+      if (target.protocol !== 'http:' || target.username || target.password) throw new Error('unsupported protocol');
+      const cleanHeaders = headers => {
+        const omit = new Set(['connection', 'keep-alive', 'proxy-authenticate', 'proxy-authorization', 'proxy-connection', 'te', 'trailer', 'transfer-encoding', 'upgrade', ...(headers.connection || '').toLowerCase().split(',').map(s => s.trim())]);
+        return Object.fromEntries(Object.entries(headers).filter(([name]) => !omit.has(name)));
       };
-      socket.on('data', onData);
-      res.once('close', () => socket.destroy());
-    } catch { socket?.destroy(); res.writeHead(502); res.end(); }
+      const upstream = http.request(target, { method: req.method, headers: { ...cleanHeaders(req.headers), host: target.host }, agent }, response => {
+        res.writeHead(response.statusCode, cleanHeaders(response.headers));
+        response.on('error', () => res.destroy());
+        response.pipe(res);
+      });
+      upstream.setTimeout(30000, () => upstream.destroy(new Error('proxy timeout')));
+      upstream.on('error', () => { if (!res.headersSent) res.writeHead(502); res.end(); });
+      req.on('aborted', () => upstream.destroy());
+      res.once('close', () => { upstream.destroy(); agent.destroy(); });
+      req.pipe(upstream);
+    } catch { agent.destroy(); res.writeHead(502); res.end(); }
   }
   async stop() {
+    if (this.stopping) return this.stopping;
     this.stopped = true;
-    for (const socket of this.sockets) socket.destroy();
-    if (this.server) await new Promise(resolve => this.server.close(resolve));
-    this.server = null;
+    this.stopping = (async () => {
+      for (const socket of this.sockets) socket.destroy();
+      if (this.server) await new Promise(resolve => this.server.close(resolve));
+      this.server = null;
+    })();
+    return this.stopping;
   }
 }
 module.exports = { SocksForwarder };

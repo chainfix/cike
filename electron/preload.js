@@ -5,9 +5,10 @@
  */
 const { contextBridge, ipcRenderer } = require('electron');
 
+const connection = ipcRenderer.sendSync('connection-info');
 contextBridge.exposeInMainWorld('lfb', {
-  apiBase: process.env.LFB_API_URL || '',
-  token: process.env.LFB_API_TOKEN || '',
+  apiBase: connection.apiBase || '',
+  token: connection.token || '',
   chromiumStatus: () => ipcRenderer.invoke('chromium-status'),
   chromiumDownload: () => ipcRenderer.invoke('chromium-download'),
   onChromiumProgress: (cb) => ipcRenderer.on('chromium-download-progress', (_e, p) => cb(p)),

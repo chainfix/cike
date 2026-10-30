@@ -1,129 +1,98 @@
 'use strict';
-/**
- * ProfileStore — JSON-backed store for browser profiles.
- * Each profile is a directory under <dataDir>/profiles/<id> plus a record
- * in <dataDir>/profiles.json. Everything stays local; no backend involved.
- */
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
+const { HOST_PLATFORM, validateProfile } = require('./fingerprint');
+const { privateDirectory, readJSON, writeJSON, credentials } = require('./privatefiles');
+const { validateInlineProxy } = require('./proxyconfig');
 
 const DEFAULT_SPEC = {
-  name: 'profile',
-  group: '',                  // free-form group label
-  platform: 'mac',            // 'mac' | 'win' — drives UA/platform/WebGL consistency
-  userAgent: null,            // null = pick from pool by platform
-  proxyId: null,              // saved proxy id (from ProxyStore) | null
-  viewport: { width: 1440, height: 900 },
-  deviceScaleFactor: 2,
-  locale: 'auto',                // 'auto' = follow proxy country (if proxy set & checked),
-  timezone: 'auto',              // 'auto' = follow proxy IP timezone (if proxy set & checked),
-                              // otherwise falls back to America/New_York
-  geolocation: null,          // { latitude, longitude, accuracy } | null
-  proxy: null,                // inline { server, username, password } | null (custom, not saved)
-  canvasSeed: null,           // null = random per profile at creation
-  canvasNoise: false,         // true = per-profile canvas pixel offset (unlinkable,
-                              // but browserscan flags ANY canvas modification as
-                              // "tampering" -5%; keep false for max authenticity)
-  hardwareConcurrency: null, // null = sensible random pick per platform at creation
-  deviceMemory: null,        // null = 8 or 16 at creation
-  webrtc: 'auto',            // 'auto' | 'default' | 'disabled'
-  colorScheme: 'light',       // 'light' | 'dark' | 'no-preference'
+  name: 'profile', group: '', fingerprintMode: 'native', platform: HOST_PLATFORM,
+  userAgent: null, proxyId: null, proxy: null,
+  viewport: { width: 1440, height: 900 }, deviceScaleFactor: 2,
+  locale: 'auto', timezone: 'auto', canvasSeed: null, canvasNoise: false,
+  hardwareConcurrency: null, deviceMemory: null, webrtc: 'auto', colorScheme: 'light',
 };
-
+const pick = value => Object.fromEntries(Object.keys(DEFAULT_SPEC).filter(k => Object.hasOwn(value, k)).map(k => [k, value[k]]));
 class ProfileStore {
-  constructor(dataDir) {
+  constructor(dataDir, secretStorage) {
     this.dataDir = dataDir;
     this.file = path.join(dataDir, 'profiles.json');
-    this.profiles = {};
-    fs.mkdirSync(path.join(dataDir, 'profiles'), { recursive: true });
-    this._load();
+    this.codec = credentials(secretStorage);
+    privateDirectory(dataDir);
+    privateDirectory(path.join(dataDir, 'profiles'));
+    this.profiles = readJSON(this.file, {});
+    for (const [id, p] of Object.entries(this.profiles)) {
+      this.profileDir(id); // Reject traversal in existing records as well.
+      if (p.id !== id) throw new Error('环境记录 ID 不一致');
+      if (p.proxy) p.proxy.password = this.codec.decode(p.proxy.password);
+      p.fingerprintMode ||= 'legacy';
+    }
     this.sequenceFile = path.join(dataDir, 'profile-sequence.json');
-    let saved = 0;
-    try { saved = JSON.parse(fs.readFileSync(this.sequenceFile, 'utf8')).last || 0; }
-    catch (e) { if (e.code !== 'ENOENT') throw e; }
+    const saved = readJSON(this.sequenceFile, { last: 0 }).last || 0;
     this.sequence = Math.max(saved, this.list().length, ...this.list().map(p => Number(p.sequence) || (/^\d+$/.test(p.name) ? Number(p.name) : 0)));
-
+    if (fs.existsSync(this.file)) this._save(); // Migrate permissions/encryption, not fingerprints.
   }
-
-  _load() {
-    try {
-      this.profiles = JSON.parse(fs.readFileSync(this.file, 'utf8'));
-    } catch {
-      this.profiles = {};
-    }
-  }
-
   _save() {
-    fs.writeFileSync(this.file, JSON.stringify(this.profiles, null, 2));
+    const records = structuredClone(this.profiles);
+    for (const p of Object.values(records)) if (p.proxy) p.proxy.password = this.codec.encode(p.proxy.password);
+    writeJSON(this.file, records);
   }
-
-  _newId() {
-    return 'p_' + crypto.randomBytes(6).toString('hex');
-  }
-
   create(spec = {}) {
-    const id = this._newId();
+    const id = 'p_' + crypto.randomBytes(6).toString('hex');
     const now = new Date().toISOString();
-    const sequence = ++this.sequence;
-    fs.writeFileSync(this.sequenceFile, JSON.stringify({ last: sequence }));
-    const record = {
-      id,
-      ...structuredClone(DEFAULT_SPEC),
-      ...spec,
-      name: String(spec.name || '').trim() || String(sequence),
-      sequence,
-      viewport: { ...DEFAULT_SPEC.viewport, ...(spec.viewport || {}) },
-      createdAt: now,
-      updatedAt: now,
-    };
-    if (record.canvasSeed === null || record.canvasSeed === undefined) {
-      record.canvasSeed = crypto.randomInt(0, 2 ** 31);
-    }
-    if (record.hardwareConcurrency === null || record.hardwareConcurrency === undefined) {
-      const pool = record.platform === 'win' ? [8, 12, 16] : [8, 10, 12];
-      record.hardwareConcurrency = pool[crypto.randomInt(0, pool.length)];
-    }
-    if (record.deviceMemory === null || record.deviceMemory === undefined) {
-      record.deviceMemory = [8, 16][crypto.randomInt(0, 2)];
-    }
+    const sequence = this.sequence + 1;
+    const record = { ...structuredClone(DEFAULT_SPEC), ...pick(spec), id,
+      name: String(spec.name || '').trim() || String(sequence), sequence,
+      viewport: { ...DEFAULT_SPEC.viewport, ...spec.viewport }, createdAt: now, updatedAt: now };
+    validateProfile(record);
+    if (record.proxy) validateInlineProxy(record.proxy);
+    this.sequence = sequence;
+    writeJSON(this.sequenceFile, { last: sequence });
     this.profiles[id] = record;
-    this._save();
-    return record;
+    try { this._save(); } catch (error) { delete this.profiles[id]; throw error; }
+    return structuredClone(record);
   }
-
-  list() {
-    return Object.values(this.profiles).sort((a, b) => a.createdAt.localeCompare(b.createdAt) || (a.sequence || 0) - (b.sequence || 0));
-  }
-
-  get(id) {
-    return this.profiles[id] || null;
-  }
-
+  list() { return Object.values(this.profiles).map(p => structuredClone(p)).sort((a, b) => a.createdAt.localeCompare(b.createdAt) || (a.sequence || 0) - (b.sequence || 0)); }
+  get(id) { return Object.hasOwn(this.profiles, id) ? structuredClone(this.profiles[id]) : null; }
   update(id, patch = {}) {
-    const rec = this.get(id);
-    if (!rec) return null;
-    const safe = { ...patch };
-    delete safe.id;
-    delete safe.createdAt;
-    delete safe.sequence;
-    Object.assign(rec, safe, { updatedAt: new Date().toISOString() });
-    this._save();
-    return rec;
+    const old = this.get(id);
+    if (!old) return null;
+    let next = { ...old, ...pick(patch), updatedAt: new Date().toISOString() };
+    if (old.fingerprintMode === 'legacy' && patch.fingerprintMode === 'native') {
+      // Keep non-secret former fingerprint settings for reference. Never put
+      // proxy credentials into a second unencrypted copy.
+      const keys = ['platform', 'userAgent', 'canvasSeed', 'canvasNoise', 'hardwareConcurrency', 'deviceMemory', 'webrtc'];
+      next.previousFingerprint = Object.fromEntries(keys.map(k => [k, old[k] ?? null]));
+      Object.assign(next, { platform: HOST_PLATFORM, userAgent: null, canvasNoise: false, canvasSeed: null,
+        hardwareConcurrency: null, deviceMemory: null, webrtc: patch.webrtc || (old.webrtc === 'disabled' ? 'restricted' : old.webrtc || 'auto') });
+    }
+    if (old.fingerprintMode === 'native' || next.fingerprintMode !== 'legacy') validateProfile(next);
+    if (next.proxy) {
+      next.proxy = { ...next.proxy };
+      if (patch.proxy && !Object.hasOwn(patch.proxy, 'password') && old.proxy?.server === next.proxy.server && (old.proxy?.username || '') === (next.proxy.username || '')) next.proxy.password = old.proxy.password;
+      validateInlineProxy(next.proxy);
+    }
+    this.profiles[id] = next;
+    try { this._save(); } catch (error) { this.profiles[id] = old; throw error; }
+    return structuredClone(next);
   }
-
   remove(id) {
     const rec = this.get(id);
     if (!rec) return false;
     delete this.profiles[id];
-    this._save();
+    try { this._save(); } catch (error) { this.profiles[id] = rec; throw error; }
     fs.rmSync(this.profileDir(id), { recursive: true, force: true });
     return true;
   }
-
   profileDir(id) {
+    if (typeof id !== 'string' || !/^p_[a-f0-9]{12}$/.test(id)) throw new Error('无效的环境 ID');
     return path.join(this.dataDir, 'profiles', id);
   }
+  public(record) {
+    const p = structuredClone(record);
+    if (p?.proxy) { p.proxy.hasAuth = !!p.proxy.password; delete p.proxy.password; }
+    return p;
+  }
 }
-
 module.exports = { ProfileStore, DEFAULT_SPEC };

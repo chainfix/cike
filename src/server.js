@@ -6,7 +6,7 @@
  *  - port picked from a fixed local range (4440–4539)
  *  - the chosen URL is written to a discovery file so external tools can
  *    find the API without configuration
- *  - token auth (query ?token= or x-api-token header), token persisted
+ *  - header token auth, token persisted with private permissions
  *    in the data dir and printed on first start
  *
  * Everything runs locally. No vendor backend, no account system.
@@ -31,21 +31,26 @@ const DATA_DIR = process.env.LFB_DATA || path.join(os.homedir(), '.local-fingerp
 const PORT_MIN = 4440;
 const PORT_MAX = 4539;
 const DISCOVERY_FILE = 'local_api_url.txt';
+const { privateDirectory, writePrivate } = require('./privatefiles');
+const { HOST_PLATFORM } = require('./fingerprint');
 const TOKEN_FILE = 'api_token.txt';
 
 function ensureDataDir(dir) {
-  fs.mkdirSync(dir, { recursive: true });
+  privateDirectory(dir);
   return dir;
 }
 
 function getToken(dir) {
   const f = path.join(dir, TOKEN_FILE);
   try {
+    if (!fs.lstatSync(f).isFile()) throw new Error('Token 必须是普通文件');
+    fs.chmodSync(f, 0o600);
     const t = fs.readFileSync(f, 'utf8').trim();
-    if (t) return t;
-  } catch { /* first run */ }
+    if (/^[a-f0-9]{48}$/.test(t)) return t;
+    throw new Error('Token 文件损坏');
+  } catch (error) { if (error.code !== 'ENOENT') throw error; }
   const t = crypto.randomBytes(24).toString('hex');
-  fs.writeFileSync(f, t, { mode: 0o600 });
+  writePrivate(f, t);
   return t;
 }
 
@@ -73,16 +78,6 @@ function need(obj, fields) {
   }
 }
 
-/** Resolve a profile's effective proxy: saved proxy (proxyId) wins, else inline. */
-function resolveProxy(profile, proxyStore) {
-  if (profile.proxyId) {
-    const p = proxyStore.getSecret(profile.proxyId);
-    if (p) return ProxyStore.toPlaywright(p);
-  }
-  if (profile.proxy && profile.proxy.server) return profile.proxy;
-  return null;
-}
-
 /**
  * Build the backend (stores + Koa app) without listening.
  * Returns { app, store, proxyStore, browsers, token, dataDir }.
@@ -90,15 +85,13 @@ function resolveProxy(profile, proxyStore) {
 function buildBackend(dataDir = DATA_DIR, options = {}) {
   ensureDataDir(dataDir);
   const token = getToken(dataDir);
-  const store = new ProfileStore(dataDir);
-  const proxyStore = new ProxyStore(dataDir);
+  const store = new ProfileStore(dataDir, options.secretStorage);
+  const proxyStore = new ProxyStore(dataDir, options.secretStorage);
   const settings = new Settings(dataDir, options.resolveSystemProxy);
   const browsers = new BrowserManager(store, proxyStore, settings, options);
 
   const app = new Koa();
   const router = new Router({ prefix: '/api' });
-
-  app.use(bodyParser());
 
   app.use(async (ctx, next) => {
     try {
@@ -111,8 +104,20 @@ function buildBackend(dataDir = DATA_DIR, options = {}) {
 
   app.use(async (ctx, next) => {
     if (!ctx.path.startsWith('/api/')) return next();
-    const t = ctx.query.token || ctx.get('x-api-token');
-    if (t !== token) {
+    const origin = ctx.get('origin');
+    if (origin && origin !== 'null') ctx.throw(403, 'browser origin not allowed');
+    if (origin === 'null') {
+      ctx.set('Access-Control-Allow-Origin', 'null');
+      ctx.set('Vary', 'Origin');
+      if (ctx.method === 'OPTIONS') {
+        ctx.set('Access-Control-Allow-Methods', 'GET,POST,PATCH,DELETE,OPTIONS');
+        ctx.set('Access-Control-Allow-Headers', 'Content-Type,X-API-Token');
+        ctx.status = 204;
+        return;
+      }
+    }
+    const t = ctx.get('x-api-token');
+    if (Buffer.byteLength(t) !== Buffer.byteLength(token) || !crypto.timingSafeEqual(Buffer.from(t), Buffer.from(token))) {
       ctx.status = 401;
       ctx.body = { ok: false, error: 'invalid token' };
       return;
@@ -120,9 +125,11 @@ function buildBackend(dataDir = DATA_DIR, options = {}) {
     await next();
   });
 
+  app.use(bodyParser({ jsonLimit: '256kb' }));
+
   // --- meta ---
   router.get('/getVersion', (ctx) => {
-    ctx.body = { ok: true, version: VERSION, name: 'local-fingerprint-browser' };
+    ctx.body = { ok: true, version: VERSION, name: 'cike', platform: HOST_PLATFORM, fingerprintMode: 'native', credentialProtection: proxyStore.codec.protection };
   });
 
   router.get('/settings', (ctx) => {
@@ -136,7 +143,7 @@ function buildBackend(dataDir = DATA_DIR, options = {}) {
   // --- profiles ---
   router.get('/profiles', (ctx) => {
     const profiles = store.list().map((p) => ({
-      ...p,
+      ...store.public(p),
       open: browsers.isOpen(p.id),
       proxyRemark: p.proxyId ? (proxyStore.get(p.proxyId)?.remark || '(deleted)') : (p.proxy ? 'custom' : 'none'),
     }));
@@ -146,23 +153,24 @@ function buildBackend(dataDir = DATA_DIR, options = {}) {
   router.post('/profiles', (ctx) => {
     const body = ctx.request.body || {};
     if (body.proxyId && !proxyStore.get(body.proxyId)) ctx.throw(400, 'proxy not found');
-    ctx.body = { ok: true, profile: store.create(body) };
+    ctx.body = { ok: true, profile: store.public(store.create(body)) };
   });
 
   router.get('/profiles/:id', (ctx) => {
     const p = store.get(ctx.params.id);
     if (!p) ctx.throw(404, 'profile not found');
-    ctx.body = { ok: true, profile: p };
+    ctx.body = { ok: true, profile: store.public(p) };
   });
 
   router.patch('/profiles/:id', (ctx) => {
     const body = ctx.request.body || {};
     if (body.proxyId && !proxyStore.get(body.proxyId)) ctx.throw(400, 'proxy not found');
+    if (browsers.isOpen(ctx.params.id)) ctx.throw(409, '请先关闭环境再修改设置');
     const p = store.update(ctx.params.id, body);
     if (!p) ctx.throw(404, 'profile not found');
     ctx.body = {
       ok: true,
-      profile: p,
+      profile: store.public(p),
       ...(browsers.isOpen(ctx.params.id) ? { warning: 'profile is open; changes apply on next open' } : {}),
     };
   });
@@ -190,12 +198,14 @@ function buildBackend(dataDir = DATA_DIR, options = {}) {
   });
 
   router.patch('/proxies/:id', (ctx) => {
+    if (store.list().some(p => p.proxyId === ctx.params.id && browsers.isOpen(p.id))) ctx.throw(409, '请先关闭使用此代理的环境');
     const p = proxyStore.update(ctx.params.id, ctx.request.body || {});
     if (!p) ctx.throw(404, 'proxy not found');
     ctx.body = { ok: true, proxy: p };
   });
 
   router.delete('/proxies/:id', (ctx) => {
+    if (store.list().some(p => p.proxyId === ctx.params.id)) ctx.throw(409, '代理仍被环境引用，请先解除绑定；不会自动改为直连');
     if (!proxyStore.remove(ctx.params.id)) ctx.throw(404, 'proxy not found');
     ctx.body = { ok: true };
   });
@@ -210,7 +220,7 @@ function buildBackend(dataDir = DATA_DIR, options = {}) {
         results.push({ id, status: 'failed', error: 'not found' });
         continue;
       }
-      const r = await checkProxy(secret, settings);
+      const r = await (options.checkProxy || checkProxy)(secret, settings);
       proxyStore.setCheckResult(id, {
         status: r.status,
         exitIp: r.exitIp || null,
@@ -229,8 +239,7 @@ function buildBackend(dataDir = DATA_DIR, options = {}) {
     const { profile_id, headless = false } = ctx.request.body;
     const profile = store.get(profile_id);
     if (!profile) ctx.throw(404, 'profile not found');
-    const proxy = resolveProxy(profile, proxyStore);
-    ctx.body = { ok: true, ...(await browsers.open(profile_id, { headless, proxyOverride: proxy })) };
+    ctx.body = { ok: true, ...(await browsers.open(profile_id, { headless })) };
   });
 
   router.post('/closeBrowser', async (ctx) => {
@@ -261,9 +270,10 @@ async function startBackend(dataDir = DATA_DIR, options = {}) {
   const backend = buildBackend(dataDir, options);
   const port = await findFreePort(PORT_MIN, PORT_MAX);
   const url = `http://127.0.0.1:${port}/`;
-  fs.writeFileSync(path.join(backend.dataDir, DISCOVERY_FILE), url + '\n');
-  const server = await new Promise((resolve) => {
+  writePrivate(path.join(backend.dataDir, DISCOVERY_FILE), url + '\n');
+  const server = await new Promise((resolve, reject) => {
     const s = backend.app.listen(port, '127.0.0.1', () => resolve(s));
+    s.once('error', reject);
   });
   return { ...backend, url, port, server };
 }
@@ -272,7 +282,7 @@ async function main() {
   const b = await startBackend();
   console.log(`[LocalAPI] listening on ${b.url}`);
   console.log(`[LocalAPI] discovery file: ${path.join(b.dataDir, DISCOVERY_FILE)}`);
-  console.log(`[LocalAPI] api token: ${b.token}`);
+  console.log(`[LocalAPI] token file (0600): ${path.join(b.dataDir, TOKEN_FILE)}`);
   console.log(`[LocalAPI] data dir: ${b.dataDir}`);
 
   const shutdown = async () => {

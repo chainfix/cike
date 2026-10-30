@@ -2,6 +2,7 @@
 <html lang="zh-CN">
 <head>
 <meta charset="UTF-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src http://127.0.0.1:*; object-src 'none'; base-uri 'none'; form-action 'none'">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>CIKE</title>
 <link rel="stylesheet" href="styles.css">
@@ -71,7 +72,7 @@
             </div>
           </div>
           <div class="field-row">
-            <div class="field"><label>操作系统</label><select id="n-platform" class="input"><option value="mac">macOS</option><option value="windows">Windows</option><option value="linux">Linux</option></select></div>
+            <div class="field"><label>指纹策略</label><p class="hint">原生一致 · 跟随本机系统与硬件</p></div>
             <div class="field"><label>分辨率</label><select id="n-vp" class="input"></select></div>
           </div>
         </div>
@@ -91,17 +92,8 @@
             <div class="field"><label>语言</label><select id="n-locale" class="input"></select></div>
             <div class="field"><label>时区</label><select id="n-tz" class="input"></select></div>
           </div>
-          <div class="field-row">
-            <div class="field"><label>CPU 核数</label><input id="n-cores" class="input" placeholder="留空=真实值"></div>
-            <div class="field"><label>内存 (GB)</label><input id="n-memory" class="input" placeholder="留空=真实值"></div>
-          </div>
-          <div class="field"><label>Canvas 噪声 <span class="sub">（去关联用，browserscan -5%）</span></label>
-            <select id="n-cnoise" class="input"><option value="0">关闭（指纹最真）</option><option value="1">开启（环境间去关联）</option></select>
-          </div>
-          <div class="field-row">
-            <div class="field"><label>WebRTC</label><select id="n-webrtc" class="input"><option value="auto">自动（有代理时防泄漏）</option><option value="disabled">禁用</option><option value="default">默认</option></select></div>
-            <div class="field"><label>随机种子</label><input id="n-seed" class="input" placeholder="留空=随机"></div>
-          </div>
+          <p class="hint">CPU、内存、Canvas、Audio、显卡和浏览器版本沿用 Chromium 原生值，使页面与 Worker 保持一致。不同环境独立保存登录状态，但仍可能有相同硬件指纹。</p>
+          <div class="field"><label>WebRTC</label><select id="n-webrtc" class="input"><option value="auto">自动（限制直连 UDP）</option><option value="restricted">限制直连 UDP（可能影响通话）</option><option value="default">默认（绑定代理时仍限制 UDP）</option></select></div>
         </div>
         <div class="row" style="margin-top:4px">
           <button id="n-save" class="btn primary">创建环境</button>
@@ -155,7 +147,7 @@
           <div id="browser-status" class="kv">检测中…</div>
           <div id="browser-progress" class="progress hidden"><div class="bar"></div></div>
           <div class="row"><button id="btn-download-browser" class="btn primary">下载 Chromium</button></div>
-          <p class="hint">Chromium 约 170 MB，从 Playwright CDN 下载一次，存放在系统缓存目录。</p>
+          <p class="hint">按本版本锁定的 Playwright 版本下载匹配内核，保存在 CIKE 数据目录中；更新内核后重新打开环境生效。</p>
         </div>
         <div class="card">
           <h2>网络</h2>
