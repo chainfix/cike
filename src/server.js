@@ -110,7 +110,7 @@ function buildBackend(dataDir = DATA_DIR, options = {}) {
       ctx.set('Access-Control-Allow-Origin', 'null');
       ctx.set('Vary', 'Origin');
       if (ctx.method === 'OPTIONS') {
-        ctx.set('Access-Control-Allow-Methods', 'GET,POST,PATCH,DELETE,OPTIONS');
+        ctx.set('Access-Control-Allow-Methods', 'GET,POST,PUT,PATCH,DELETE,OPTIONS');
         ctx.set('Access-Control-Allow-Headers', 'Content-Type,X-API-Token');
         ctx.status = 204;
         return;
@@ -140,14 +140,62 @@ function buildBackend(dataDir = DATA_DIR, options = {}) {
     ctx.body = { ok: true, settings: settings.set(ctx.request.body || {}) };
   });
 
+  function proxyDisplay(profile) {
+    const proxy = profile.proxyId ? proxyStore.get(profile.proxyId) : null;
+    if (profile.proxyId && !proxy) return { proxyRemark: '代理已删除', proxyAddress: '', proxyIp: null, proxyCheckedAt: null };
+    const latest = proxy && (!profile.lastNetwork?.checkedAt || proxy.updatedAt > profile.lastNetwork.checkedAt) ? proxy : profile.lastNetwork;
+    return {
+      proxyRemark: proxy ? proxy.remark : profile.proxy ? '独立代理' : '系统网络',
+      proxyAddress: proxy ? `${proxy.host}:${proxy.port}` : profile.proxy?.server || '',
+      proxyIp: latest?.exitIp || null,
+      proxyCheckedAt: latest?.checkedAt || null,
+    };
+  }
   // --- profiles ---
   router.get('/profiles', (ctx) => {
     const profiles = store.list().map((p) => ({
       ...store.public(p),
       open: browsers.isOpen(p.id),
-      proxyRemark: p.proxyId ? (proxyStore.get(p.proxyId)?.remark || '(deleted)') : (p.proxy ? 'custom' : 'none'),
+      phase: browsers.closing.has(p.id) ? 'closing' : browsers.opening.has(p.id) ? 'opening' : browsers.isOpen(p.id) ? 'open' : 'closed',
+      ...proxyDisplay(p),
     }));
     ctx.body = { ok: true, profiles };
+  });
+
+  // Parse is explicitly invoked by the proxy editor; never log clipboard text.
+  router.post('/proxies/parse', ctx => {
+    try { ctx.body = { ok: true, proxy: ProxyStore.parseLine(ctx.request.body?.text) }; }
+    catch (error) { ctx.throw(400, error.message); }
+  });
+
+  router.put('/profiles/:id/proxy', async ctx => {
+    const id = ctx.params.id;
+    if (!store.get(id)) ctx.throw(404, '环境不存在');
+    if (browsers.isOpen(id)) ctx.throw(409, '请先关闭当前环境再修改代理');
+    const body = ctx.request.body || {};
+    let patch;
+    if (body.mode === 'none') patch = { proxyId: null, proxy: null };
+    else if (body.mode === 'saved') {
+      if (!proxyStore.get(body.proxyId)) ctx.throw(400, '代理不存在');
+      patch = { proxyId: body.proxyId, proxy: null };
+    } else if (body.mode === 'custom') {
+      // Store an independent inline proxy; shared proxy records stay intact.
+      const value = body.text ? ProxyStore.parseLine(body.text) : require('./proxyconfig').validateProxy(body.proxy || {});
+      patch = { proxyId: null, proxy: ProxyStore.toPlaywright(value) };
+    } else ctx.throw(400, '请选择代理类型');
+    ctx.body = { ok: true, profile: store.public(store.update(id, patch)) };
+  });
+
+  router.post('/profiles/:id/checkProxy', async ctx => {
+    const id = ctx.params.id, profile = store.get(id);
+    if (!profile) ctx.throw(404, '环境不存在');
+    const proxy = require('./proxyconfig').resolveProxy(profile, proxyStore);
+    if (!proxy) ctx.throw(400, '未配置代理，请打开环境检测系统网络出口');
+    const result = await (options.checkProxy || checkProxy)(proxy, settings);
+    if (JSON.stringify(require('./proxyconfig').resolveProxy(store.get(id) || {}, proxyStore)) !== JSON.stringify(proxy)) ctx.throw(409, '代理已改变，请重新检测');
+    if (profile.proxyId) proxyStore.setCheckResult(profile.proxyId, result);
+    store.recordNetwork(id, { route: 'proxy', exitIp: result.exitIp || null, checkedAt: new Date().toISOString() });
+    ctx.body = { ok: true, result };
   });
 
   router.post('/profiles', (ctx) => {

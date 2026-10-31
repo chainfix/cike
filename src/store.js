@@ -31,6 +31,9 @@ class ProfileStore {
     this.sequenceFile = path.join(dataDir, 'profile-sequence.json');
     const saved = readJSON(this.sequenceFile, { last: 0 }).last || 0;
     this.sequence = Math.max(saved, this.list().length, ...this.list().map(p => Number(p.sequence) || (/^\d+$/.test(p.name) ? Number(p.name) : 0)));
+    for (const p of this.list()) {
+      if (!Number.isSafeInteger(p.sequence) || p.sequence < 1) this.profiles[p.id].sequence = ++this.sequence;
+    }
     if (fs.existsSync(this.file)) this._save(); // Migrate permissions/encryption, not fingerprints.
   }
   _save() {
@@ -73,9 +76,22 @@ class ProfileStore {
       if (patch.proxy && !Object.hasOwn(patch.proxy, 'password') && old.proxy?.server === next.proxy.server && (old.proxy?.username || '') === (next.proxy.username || '')) next.proxy.password = old.proxy.password;
       validateInlineProxy(next.proxy);
     }
+    if (Object.hasOwn(patch, 'proxyId') || Object.hasOwn(patch, 'proxy')) next.lastNetwork = null;
     this.profiles[id] = next;
     try { this._save(); } catch (error) { this.profiles[id] = old; throw error; }
     return structuredClone(next);
+  }
+  recordOpened(id, network) {
+    const p = this.get(id);
+    if (!p) throw new Error('环境不存在');
+    this.profiles[id] = { ...p, lastOpenedAt: new Date().toISOString(), lastNetwork: network };
+    try { this._save(); } catch (error) { this.profiles[id] = p; throw error; }
+  }
+  recordNetwork(id, network) {
+    const p = this.get(id);
+    if (!p) return;
+    this.profiles[id] = { ...p, lastNetwork: network };
+    try { this._save(); } catch (error) { this.profiles[id] = p; throw error; }
   }
   remove(id) {
     const rec = this.get(id);
@@ -83,6 +99,9 @@ class ProfileStore {
     delete this.profiles[id];
     try { this._save(); } catch (error) { this.profiles[id] = rec; throw error; }
     fs.rmSync(this.profileDir(id), { recursive: true, force: true });
+    const app = path.join(require('./profileapp').appsRoot(this.dataDir), `CIKE-${rec.sequence}-${id}.app`);
+    fs.rmSync(app, { recursive: true, force: true });
+    fs.rmSync(app + '.json', { force: true });
     return true;
   }
   profileDir(id) {

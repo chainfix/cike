@@ -38,6 +38,16 @@ CIKE 是基于 Electron、Chromium 和 Playwright 的本地多环境浏览器。
 - **内核管理**：在设置页下载 Chromium，后续启动复用已安装内核。
 - **本地自动化 API**：通过 Token 鉴权管理环境、代理及浏览器进程，默认关闭外部调试端口；需要 CDP 接入时，启动应用前显式设置 `LFB_EXPOSE_DEBUGGER=1`。
 
+## v0.7.0 环境管理更新
+
+- **紧凑分栏列表**：分别展示环境名称与状态、代理/出口 IP、创建与最后打开时间，减少上下留白；环境每页12条、代理每页15条，支持跨页选择。
+- **单环境代理编辑**：点击卡片中的蓝色 IP 或代理地址即可修改；打开编辑窗口时自动解析剪贴板中的代理，支持保存并检测，不影响引用同一代理的其他环境。
+- **环境生命周期**：关闭最后一个浏览器窗口会退出该环境进程，启动中可以取消；关闭保留配置、Cookie和站点数据。
+- **默认环境检测页**：通过当前浏览器网络检测出口 IP、地区、时区、语言与运营商，支持重新检测。沿用 api.ipify.org 和 ipwho.is，暂不提供家宽/机房 IP 性质分类。
+- **独立序号图标**：macOS 环境图标顶部显示大号序号，下方为 CIKE 标志，采用铺满背景；修复 Dock 显示 Chrome Test 图标的问题，已有图标缓存会自动重建。
+
+从0.6.0升级沿用原环境数据。首次生成每环境应用副本需要额外启动时间；APFS优先使用写时复制，下载的原内核保持不变。详细验收步骤见[环境管理验收说明](docs/LOCAL-ACCEPTANCE.md)。
+
 ## v0.6.0 安全与一致性更新
 
 - **浏览器沙盒**：明确启用 Chromium sandbox 和站点进程隔离；不再允许 `LFB_EXTRA_ARGS` 绕过沙盒或代理设置。删除页面级 stealth、Canvas/Audio 噪声及 CPU、内存、平台、UA-CH 补丁，避免跨上下文矛盾和专用注入标记。
@@ -199,6 +209,9 @@ socks5://用户名:密码@host:port
 | `GET /api/proxies`、`POST /api/proxies` | 列出、创建代理 |
 | `PATCH /api/proxies/:id`、`DELETE /api/proxies/:id` | 修改、删除代理 |
 | `POST /api/proxies/check` | 检测代理 |
+| `POST /api/proxies/parse` | 解析整行代理文本 |
+| `PUT /api/profiles/:id/proxy` | 修改单个环境的代理 |
+| `POST /api/profiles/:id/checkProxy` | 检测单个环境代理并更新出口信息 |
 | `POST /api/openBrowser`、`POST /api/closeBrowser` | 打开、关闭环境浏览器 |
 | `GET /api/checkOpen`、`GET /api/openedList` | 查询运行状态 |
 | `GET /api/settings`、`PATCH /api/settings` | 查询、保存 SOCKS5 系统代理开关 |

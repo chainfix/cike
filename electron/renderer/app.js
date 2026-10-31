@@ -229,7 +229,7 @@ async function pollOpenStatus() {
   if (state.page !== 'profiles' || document.querySelector('.modal')) return;
   try {
     const { profiles } = await api('/api/profiles');
-    const cur = profiles.map((p) => p.id + ':' + (p.open ? 1 : 0)).sort().join(',');
+    const cur = JSON.stringify(profiles);
     if (cur !== lastOpenState) {
       lastOpenState = cur;
       state.profiles = profiles;
@@ -238,6 +238,12 @@ async function pollOpenStatus() {
   } catch { /* silent */ }
 }
 setInterval(pollOpenStatus, 3000);
+
+function formatTime(value) {
+  if (!value) return '尚未打开';
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? '—' : date.toLocaleString('zh-CN', { hour12: false });
+}
 
 function renderProfiles() {
   const q = document.getElementById('profile-search').value.trim().toLowerCase();
@@ -264,19 +270,29 @@ function renderProfiles() {
   list.innerHTML = pageRows.map((p) => `
     <div class="env-card ${p.open ? 'running' : ''}">
       <input type="checkbox" class="profile-sel" value="${p.id}" aria-label="选择环境 ${esc(p.name)}" ${selectedProfiles.has(p.id) ? 'checked' : ''}>
-      <span class="dot"></span>
-      <div class="info">
-        <div class="name">${esc(p.name)}</div>
-        <div class="meta">
-          <span>${esc(p.group || '未分组')}</span>
-          <span>${p.fingerprintMode === 'native' ? '原生一致' : '旧环境 · 需要转换'}</span>
-          <span>代理：${esc(p.proxyRemark || '无')}</span>
-          <span class="pill ${p.open ? 'open' : 'closed'}">${p.open ? '运行中' : '已关闭'}</span>
+      <span class="environment-number">${esc(p.sequence)}</span>
+      <div class="environment-details">
+        <div class="environment-identity">
+          <div class="environment-title"><div class="name">${esc(p.name)}</div><span class="environment-group" title="${esc(p.group || '未分组')}">${esc(p.group || '未分组')}</span></div>
+          <div class="environment-state">
+            <span class="pill ${p.open ? 'open' : 'closed'}">${p.phase === 'opening' ? '启动中' : p.phase === 'closing' ? '关闭中' : p.open ? '运行中' : '已关闭'}</span>
+            <span class="environment-mode">${p.fingerprintMode === 'native' ? '原生一致' : '旧环境 · 需要转换'}</span>
+          </div>
+        </div>
+        <div class="environment-network">
+          <div class="environment-network-title"><span class="environment-label">${p.proxyIp ? '出口 IP' : p.proxyAddress ? '代理地址' : '网络连接'}</span>
+          <button class="proxy-link" data-act="proxy" data-id="${p.id}" title="点击修改当前环境代理">${esc(p.proxyIp || p.proxyAddress || '未配置代理')} <span aria-hidden="true">✎</span></button></div>
+          <div class="environment-route">${esc(p.proxyRemark || '系统网络')}${p.proxyAddress && p.proxyIp ? ' · ' + esc(p.proxyAddress) : ''}</div>
+          <div class="environment-checked">${p.proxyCheckedAt ? '检测于 ' + formatTime(p.proxyCheckedAt) : '尚未检测出口 IP'}</div>
+        </div>
+        <div class="environment-times">
+          <div><span class="environment-label">创建时间</span> <span class="environment-time">${formatTime(p.createdAt)}</span></div>
+          <div><span class="environment-label">最后打开</span> <span class="environment-time">${formatTime(p.lastOpenedAt)}</span></div>
         </div>
       </div>
       <div class="actions">
         ${p.open
-          ? `<button class="link-btn" data-act="close" data-id="${p.id}">关闭</button>`
+          ? `<button class="link-btn" data-act="close" data-id="${p.id}">${p.phase === 'opening' ? '取消启动' : '关闭'}</button>`
           : `<button class="link-btn" data-act="open" data-id="${p.id}">打开</button>`}
         <button class="link-btn" data-act="edit" data-id="${p.id}">编辑</button>
         <button class="link-btn danger" data-act="del" data-id="${p.id}">删除</button>
@@ -325,6 +341,9 @@ async function handleProfileAction(act, id, btn) {
       return;
     } else if (act === 'close') {
       await api('/api/closeBrowser', { method: 'POST', body: JSON.stringify({ profile_id: id }) });
+    } else if (act === 'proxy') {
+      await openEnvironmentProxy(state.profiles.find(p => p.id === id));
+      return;
     } else if (act === 'del') {
       const p = state.profiles.find((x) => x.id === id);
       if (!confirm(`删除环境「${p?.name}」及其全部数据？`)) return;
@@ -834,6 +853,7 @@ document.getElementById('btn-open-data').onclick = () => window.lfb.openDataDir(
     state.chromium = await window.lfb.chromiumStatus();
   } catch { state.chromium = { installed: false }; }
   updateBanner();
+  try { const { version } = await api('/api/getVersion'); document.getElementById('app-version').textContent = `v${version} · 本地运行`; } catch {}
   await loadProfiles();
   await loadProxies();
   showPage('profiles');

@@ -40,41 +40,7 @@ class ProxyStore {
    *   ...{remark}   (trailing {remark} becomes the remark)
    */
   static parseLine(line) {
-    let remark = '';
-    const m = line.match(/\{([^}]*)\}\s*$/);
-    if (m) {
-      remark = m[1].trim();
-      line = line.slice(0, m.index).trim();
-    }
-    let type = 'http';
-    const urlm = line.match(/^(https?|socks5):\/\/(.*)$/i);
-    if (urlm) {
-      type = urlm[1].toLowerCase();
-      line = urlm[2];
-    }
-    // strip possible userinfo already handled? handle user:pass@host
-    let auth = '';
-    const at = line.lastIndexOf('@');
-    if (at !== -1) {
-      auth = line.slice(0, at);
-      line = line.slice(at + 1);
-    }
-    const parts = line.split(':');
-    if (parts.length < 2) throw new Error('无法解析代理行');
-    const host = parts[0].trim();
-    const port = Number(parts[1].trim());
-    if (!host || !Number.isFinite(port)) throw new Error('无效的代理主机或端口');
-    let username = '';
-    let password = '';
-    if (auth) {
-      const i = auth.indexOf(':');
-      username = decodeURIComponent(i === -1 ? auth : auth.slice(0, i));
-      password = decodeURIComponent(i === -1 ? '' : auth.slice(i + 1));
-    } else if (parts.length >= 4) {
-      username = parts[2].trim();
-      password = parts.slice(3).join(':').trim();
-    }
-    return { type, host, port, username, password, remark: remark || `${host}:${port}` };
+    return require('./proxyparse').parseProxyLine(line);
   }
 
   add(spec) {

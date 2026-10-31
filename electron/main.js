@@ -4,7 +4,7 @@
  * Main process starts the local backend (Koa API + profile/browser manager)
  * and hosts the management UI, which talks to the same Local API over HTTP.
  */
-const { app, BrowserWindow, ipcMain, shell, session, safeStorage, dialog } = require('electron');
+const { app, BrowserWindow, ipcMain, shell, session, safeStorage, dialog, clipboard } = require('electron');
 const { pathToFileURL } = require('url');
 const path = require('path');
 const fs = require('fs');
@@ -121,5 +121,9 @@ handle('open-data-dir', async () => {
   return { ok: true };
 });
 
+handle('proxy-clipboard', async () => {
+  try { return { ok: true, proxy: require('../src/proxyparse').parseProxyLine(await clipboard.readText()) }; }
+  catch { return { ok: false }; }
+});
 handle('update-check', () => checkUpdate());
 handle('update-install', () => installUpdate());

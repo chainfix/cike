@@ -105,10 +105,10 @@ button.side-title:hover { background: var(--hover); }
 .side-foot { font-size: 11px; color: var(--faint); padding: 8px 8px 2px; }
 
 /* ---------- 主区 ---------- */
-.main { flex: 1; overflow-y: auto; padding: 30px 40px; max-width: 1060px; }
-.page-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 22px; }
+.main { flex: 1; min-width: 0; overflow-y: auto; padding: 30px 32px; }
+.page-head { display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap; margin-bottom: 22px; }
 .page-head h1 { margin: 0; font-size: 21px; font-weight: 650; letter-spacing: -.01em; }
-.toolbar { display: flex; gap: 8px; align-items: center; }
+.toolbar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
 
 .banner {
   background: #fff; border: 1px solid var(--line); color: var(--ink-soft);
@@ -118,20 +118,51 @@ button.side-title:hover { background: var(--hover); }
 }
 
 /* 环境卡片列表 */
-.env-cards { display: flex; flex-direction: column; gap: 10px; }
+.env-cards { display: flex; flex-direction: column; gap: 7px; container-type: inline-size; }
 .env-card {
   background: var(--panel); border: 1px solid var(--line);
-  border-radius: var(--radius); padding: 16px 20px;
-  display: flex; align-items: center; gap: 16px;
+  border-radius: 10px; padding: 10px 16px;
+  display: grid; grid-template-columns: 18px 38px minmax(0, 1fr) auto; align-items: center; gap: 14px;
   transition: border-color .15s, box-shadow .15s;
 }
 .env-card:hover { border-color: #d8d8dc; box-shadow: 0 2px 12px rgba(0,0,0,.05); }
-.env-card .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--faint); flex-shrink: 0; }
-.env-card.running .dot { background: var(--green); box-shadow: 0 0 8px #1a9e5499; }
-.env-card .info { flex: 1; min-width: 0; }
-.env-card .name { font-size: 15px; font-weight: 600; letter-spacing: -.01em; }
-.env-card .meta { font-size: 12.5px; color: var(--muted); margin-top: 3px; display: flex; gap: 10px; flex-wrap: wrap; }
-.env-card .actions { display: flex; gap: 4px; flex-shrink: 0; }
+.env-card .profile-sel { margin: 0; width: 15px; height: 15px; }
+.environment-details { display: grid; grid-template-columns: minmax(120px, .85fr) minmax(170px, 1.2fr) minmax(185px, 1fr); gap: 20px; align-items: center; min-width: 0; }
+.environment-details > div { min-width: 0; }
+.env-card .name { font-size: 15px; font-weight: 650; letter-spacing: -.01em; overflow-wrap: anywhere; }
+.environment-title { display: flex; align-items: baseline; flex-wrap: wrap; gap: 3px 10px; }
+.environment-group { font-size: 12px; color: var(--muted); overflow-wrap: anywhere; }
+.environment-state { display: flex; gap: 7px; flex-wrap: wrap; align-items: center; margin-top: 5px; }
+.env-card .pill { padding: 2px 8px; }
+.environment-mode { font-size: 11px; color: var(--muted); }
+.environment-number { min-width: 34px; height: 34px; padding: 0 4px; display: grid; place-items: center; border-radius: 9px; background: #eaf0f8; color: #284a7a; font-weight: 700; font-variant-numeric: tabular-nums; }
+.env-card.running .environment-number { background: var(--green-bg); color: var(--green); }
+.environment-label { font-size: 11px; color: var(--muted); white-space: nowrap; }
+.environment-network-title { display: flex; align-items: baseline; flex-wrap: wrap; gap: 2px 8px; }
+.proxy-link { border: 0; background: transparent; color: #1769bb; cursor: pointer; padding: 0; font: inherit; font-size: 14px; font-weight: 550; text-align: left; overflow-wrap: anywhere; max-width: 100%; }
+.proxy-link:hover { text-decoration: underline; }
+.environment-route { color: var(--ink-soft); font-size: 12px; margin-top: 2px; overflow-wrap: anywhere; }
+.environment-checked { color: var(--muted); font-size: 11px; margin-top: 1px; font-variant-numeric: tabular-nums; }
+.environment-times { display: grid; gap: 5px; }
+.environment-times > div { display: flex; align-items: baseline; flex-wrap: wrap; gap: 2px 8px; }
+.environment-times .environment-label { min-width: 44px; }
+.environment-time { font-size: 12px; color: var(--ink-soft); font-variant-numeric: tabular-nums; }
+.env-card .actions { display: flex; gap: 2px; align-items: center; padding-left: 14px; border-left: 1px solid var(--line-soft); }
+.env-card .actions .link-btn { padding: 6px 8px; white-space: nowrap; }
+@container (max-width: 870px) {
+  .env-card { grid-template-columns: 18px 36px minmax(0, 1fr) 58px; padding: 10px 12px; gap: 10px; }
+  .environment-details { grid-template-columns: minmax(0, .9fr) minmax(0, 1.1fr); gap: 8px 16px; }
+  .environment-times { grid-column: 1 / -1; grid-template-columns: 1fr 1.2fr; padding-top: 7px; border-top: 1px solid var(--line-soft); }
+  .env-card .actions { flex-direction: column; padding-left: 8px; }
+}
+@container (max-width: 560px) {
+  .env-card { grid-template-columns: 16px minmax(0, 1fr) auto; gap: 12px; }
+  .environment-number { grid-column: 2; justify-self: start; }
+  .env-card .profile-sel { grid-row: 1; }
+  .env-card .actions { grid-column: 3; grid-row: 1; flex-direction: row; border: 0; padding: 0; }
+  .environment-details { grid-column: 2 / -1; grid-template-columns: minmax(0, 1fr); }
+  .environment-times { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
 .list-empty {
   text-align: center; color: var(--muted); font-size: 14px;
   padding: 70px 20px; background: var(--panel);

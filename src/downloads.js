@@ -15,6 +15,9 @@ async function prepareDownloads(profileDirectory, directory = path.join(os.homed
   let preferences = {};
   try { preferences = JSON.parse(await fs.readFile(filename, 'utf8')); }
   catch (error) { if (error.code !== 'ENOENT') throw error; }
+  preferences.background_mode = { ...preferences.background_mode, enabled: false };
+  preferences.profile = { ...preferences.profile, name: path.basename(profileDirectory), exit_type: 'Normal' };
+  preferences.session = { ...preferences.session, restore_on_startup: 5 };
   preferences.download = {
     ...preferences.download,
     default_directory: directory,
